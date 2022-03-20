@@ -56,6 +56,7 @@ jobs:
   deployment:
     if: ${{ inputs.deployment-environment }}
     needs: [quay-build-push]
+    name: "Deploy to: ${{ inputs.deployment-environment }}"
     runs-on: ubuntu-latest
     steps:
       - name: Trigger deployment
