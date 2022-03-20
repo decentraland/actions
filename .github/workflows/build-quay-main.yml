@@ -14,14 +14,17 @@ on:
     outputs:
       registry-path:
         description: "Registry path"
-        value: ${{ steps.push-to-quay.outputs.registry-path }}
+        value: ${{ jobs.quay-build-push.registry-path }}
       registry-paths:
         description: "Registry paths (JSON)"
-        value: ${{ steps.push-to-quay.outputs.registry-paths }}
+        value: ${{ jobs.quay-build-push.registry-paths }}
 
 jobs:
-  main:
+  quay-build-push:
     runs-on: ubuntu-latest
+    outputs:
+      registry-path: ${{ steps.push-to-quay.outputs.registry-path }}
+      registry-paths: ${{ steps.push-to-quay.outputs.registry-paths }}
     steps:
       - uses: actions/checkout@v2
       - name: Build Image
