@@ -32,7 +32,7 @@ jobs:
         with:
           push: true
           tags: |
-            quay.io/decentraland:${{ input.service-name }}
-            quay.io/decentraland:${{ input.service-name }}:latest
+            quay.io/decentraland:${{ inputs.service-name }}
+            quay.io/decentraland:${{ inputs.service-name }}:latest
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
