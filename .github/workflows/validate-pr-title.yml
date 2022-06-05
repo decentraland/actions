@@ -1,5 +1,10 @@
 name: validate-pr-title
-on: [workflow_call]
+
+on: 
+  pull_request:
+    types: [edited, opened, reopened, synchronize]
+  workflow_call:
+
 jobs:
   title-matches-convention:
     runs-on: ubuntu-latest
