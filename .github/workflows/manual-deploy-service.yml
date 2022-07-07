@@ -1,14 +1,22 @@
-name: Deploy specific tag to environment
+name: Deploy 'latest' tag to environment
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       service-name:
         required: true
         type: string
+        description: "Name of the service of the Definitions repo"
       deployment-environment:
-        required: false
-        type: string
+        required: true
+        type: choice
+        options:
+          - prd
+          - dev
+          - stg
+          - biz
+        default: prd
+        description: Target environment
       tag:
         required: true
         default: "latest"
@@ -20,12 +28,13 @@ jobs:
     if: ${{ inputs.deployment-environment }}
     name: "Deploy to: ${{ inputs.deployment-environment }}"
     runs-on: ubuntu-latest
+    environment: ${{ inputs.deployment-environment }}
     steps:
       - name: Trigger deployment
         id: deploy
         uses: decentraland/dcl-deploy-action@main
         with:
-          dockerImage: "quay.io/decentraland/${{ inputs.service-name }}:${{ input.tag }}"
+          dockerImage: "quay.io/decentraland/${{ inputs.service-name }}:${{input.tag}}"
           serviceName: ${{ inputs.service-name }}
           env: ${{ inputs.deployment-environment }}
           token: ${{ secrets.GITHUB_TOKEN }}
