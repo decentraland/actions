@@ -38,6 +38,8 @@ jobs:
           tags: ${{ github.sha }} latest
           dockerfiles: |
             ./Dockerfile
+          build-args: |
+            COMMIT_HASH=${{ github.sha }}
       # Podman Login action (https://github.com/redhat-actions/podman-login) also be used to log in,
       # in which case 'username' and 'password' can be omitted.
       - name: Push To quay.io
