@@ -9,6 +9,10 @@ on:
       deployment-environment:
         required: false
         type: string
+      docker-tag:
+        required: false
+        type: string
+        default: latest
     secrets:
       QUAY_USERNAME:
         required: true
@@ -35,7 +39,7 @@ jobs:
         uses: redhat-actions/buildah-build@v2
         with:
           image: ${{ inputs.service-name }}
-          tags: ${{ github.sha }} latest
+          tags: ${{ github.sha }} ${{ inputs.docker-tag }}
           dockerfiles: |
             ./Dockerfile
           build-args: |
