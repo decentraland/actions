@@ -13,6 +13,9 @@ on:
         required: false
         type: string
         default: latest
+      build-args:
+        required: false
+        type: string
     secrets:
       QUAY_USERNAME:
         required: true
@@ -43,6 +46,7 @@ jobs:
           dockerfiles: |
             ./Dockerfile
           build-args: |
+            ${{ inputs.build-args }}
             COMMIT_HASH=${{ github.sha }}
       # Podman Login action (https://github.com/redhat-actions/podman-login) also be used to log in,
       # in which case 'username' and 'password' can be omitted.
