@@ -16,6 +16,10 @@ on:
       build-args:
         required: false
         type: string
+      layers:
+        required: false
+        type: boolean
+        default: false
     secrets:
       QUAY_USERNAME:
         required: true
@@ -42,6 +46,7 @@ jobs:
         uses: redhat-actions/buildah-build@v2
         with:
           image: ${{ inputs.service-name }}
+          layers: ${{ inputs.layers }}
           tags: ${{ github.sha }} ${{ inputs.docker-tag }}
           dockerfiles: |
             ./Dockerfile
