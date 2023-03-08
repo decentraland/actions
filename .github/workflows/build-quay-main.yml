@@ -19,7 +19,7 @@ on:
       layers:
         required: false
         type: boolean
-        default: false
+        default: true
     secrets:
       QUAY_USERNAME:
         required: true
