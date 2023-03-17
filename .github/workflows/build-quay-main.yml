@@ -44,6 +44,12 @@ jobs:
       registry-paths: ${{ steps.push-to-quay.outputs.registry-paths }}
     steps:
       - uses: actions/checkout@v2
+      - name: Log in to Quay.io
+        uses: redhat-actions/podman-login@v1
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
       # Latest buildah version in Ubuntu is 1.23 and we need 1.27 or newer
       # to make use of use cache-to and cache-from args
       - name: Install latest Buildah 
