@@ -48,8 +48,9 @@ jobs:
       # to make use of use cache-to and cache-from args
       - name: Install latest Buildah 
         run: |
-          wget -O buildah_1.28.deb https://launchpad.net/ubuntu/+archive/primary/+files/buildah_1.28.2+ds1-1_amd64.deb
-          sudo dpkg -i buildah_1.128.deb
+          mkdir ~/.buildah
+          wget -O ~/.buildah/buildah_1.28.deb https://launchpad.net/ubuntu/+archive/primary/+files/buildah_1.28.2+ds1-1_amd64.deb
+          sudo dpkg -i ~/.buildah/buildah_1.128.deb
       - name: Build Image
         id: build-image
         uses: redhat-actions/buildah-build@v2
