@@ -50,7 +50,7 @@ jobs:
         run: |
           mkdir ~/.buildah
           wget -O ~/.buildah/buildah_1.28.deb https://launchpad.net/ubuntu/+archive/primary/+files/buildah_1.28.2+ds1-1_amd64.deb
-          sudo dpkg -i ~/.buildah/buildah_1.128.deb
+          sudo dpkg -i ~/.buildah/buildah_1.28.deb
       - name: Build Image
         id: build-image
         uses: redhat-actions/buildah-build@v2
