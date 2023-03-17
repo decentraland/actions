@@ -41,6 +41,11 @@ jobs:
       registry-paths: ${{ steps.push-to-quay.outputs.registry-paths }}
     steps:
       - uses: actions/checkout@v2
+      - name: Update Buildah
+        id: update-buildah
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install buildah
       - name: Build Image
         id: build-image
         uses: redhat-actions/buildah-build@v2
@@ -53,6 +58,8 @@ jobs:
           build-args: |
             ${{ inputs.build-args }}
             COMMIT_HASH=${{ github.sha }}
+          extra-args: |
+            ${{ inputs.extra-args }}
       # Podman Login action (https://github.com/redhat-actions/podman-login) also be used to log in,
       # in which case 'username' and 'password' can be omitted.
       - name: Push To quay.io
