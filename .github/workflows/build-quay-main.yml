@@ -52,6 +52,8 @@ jobs:
       - name: Build latest Buildah 
         id: update-buildah
         run: |
+          sudo apt-get -y -qq update
+          sudo apt-get -y install bats btrfs-tools git libapparmor-dev libdevmapper-dev libglib2.0-dev libgpgme11-dev libseccomp-dev libselinux1-dev skopeo-containers go-md2man
           git clone https://github.com/containers/buildah ./src/github.com/containers/buildah
           cd ./src/github.com/containers/buildah
           make runc all SECURITYTAGS="apparmor seccomp"
