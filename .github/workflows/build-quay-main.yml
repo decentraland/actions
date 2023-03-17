@@ -48,7 +48,7 @@ jobs:
       # to make use of use cache-to and cache-from args
       - name: Install latest Buildah 
         run: |
-          sudo add-apt-repository "deb <a href="http://ftp.us.debian.org/debian">http://ftp.us.debian.org/debian</a> testing non-free contrib main"
+          sudo add-apt-repository "deb http://ftp.us.debian.org/debian testing non-free contrib main"
           sudo apt-get update
           sudo apt-get install buildah
       - name: Build Image
