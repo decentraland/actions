@@ -48,9 +48,9 @@ jobs:
       # to make use of use cache-to and cache-from args
       - name: Install latest Buildah 
         run: |
-          sudo add-apt-repository "deb http://ftp.us.debian.org/debian testing non-free contrib main"
+          sudo add-apt-repository "deb http://deb.debian.org/debian bullseye-backports main contrib non-free"
           sudo apt-get update
-          sudo apt-get install buildah
+          sudo apt-get -t bullseye-backports install buildah
       - name: Build Image
         id: build-image
         uses: redhat-actions/buildah-build@v2
