@@ -16,6 +16,9 @@ on:
       build-args:
         required: false
         type: string
+      extra-args:
+        required: false
+        type: string
       layers:
         required: false
         type: boolean
