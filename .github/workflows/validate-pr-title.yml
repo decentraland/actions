@@ -1,6 +1,6 @@
 name: validate-pr-title
 
-on: 
+on:
   pull_request:
     types: [edited, opened, reopened, synchronize]
   workflow_call:
@@ -9,7 +9,7 @@ jobs:
   title-matches-convention:
     runs-on: ubuntu-latest
     steps:
-      - uses: 8BitJonny/gh-get-current-pr@1.4.0
+      - uses: 8BitJonny/gh-get-current-pr@2.2.0
         id: PR
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
