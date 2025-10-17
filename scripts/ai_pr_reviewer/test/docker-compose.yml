@@ -1,0 +1,9 @@
+services:
+  ai-reviewer:
+    build: .
+    env_file:
+      - ./.env
+    volumes:
+      - ../index.py:/app/index.py
+      - ./output:/app/output
+    working_dir: /app
