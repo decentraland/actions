@@ -22,16 +22,25 @@ def get_pr_info(repo_owner: str, repo_name: str, pr_number: int, token: str) -> 
 
 
 def get_pr_diff(repo_owner: str, repo_name: str, pr_number: int, token: str) -> str:
-    """Get PR diff from GitHub API"""
-    url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls/{pr_number}"
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3.diff"
-    }
+    """Get PR diff from GitHub API - uses files API for final state"""
+    url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls/{pr_number}/files"
+    headers = {"Authorization": f"token {token}"}
     
     response = requests.get(url, headers=headers)
     response.raise_for_status()
-    return response.text
+    files = response.json()
+    
+    # Build diff from files (final state only)
+    diff_content = ""
+    for file in files:
+        if file['status'] in ['added', 'modified', 'removed']:
+            diff_content += f"diff --git a/{file['filename']} b/{file['filename']}\n"
+            diff_content += f"--- a/{file['filename']}\n"
+            diff_content += f"+++ b/{file['filename']}\n"
+            if file.get('patch'):
+                diff_content += file['patch'] + "\n"
+    
+    return diff_content
 
 
 def get_pr_files(repo_owner: str, repo_name: str, pr_number: int, token: str) -> List[Dict]:
@@ -103,7 +112,7 @@ def analyze_diff(diff_content: str) -> Dict:
     }
 
 
-def analyze_with_llm(pr_info: Dict, changed_files: List[Dict], diff_analysis: Dict, api_key: str) -> Dict:
+def analyze_with_llm(pr_info: Dict, changed_files: List[Dict], diff_analysis: Dict, diff_content:str, api_key: str) -> Dict:
     """Analyze PR with Anthropic Claude"""
     
     client = Anthropic(api_key=api_key)
@@ -131,6 +140,9 @@ def analyze_with_llm(pr_info: Dict, changed_files: List[Dict], diff_analysis: Di
 - APIs used: {', '.join(diff_analysis['apis_used'][:5])}
 - Environment variables: {', '.join(diff_analysis['env_vars'][:5])}
 
+**DIFF CONTENT:**
+{diff_content}
+
 **IMPORTANT: Respond ONLY with valid JSON. No additional text before or after.**
 
 {{
@@ -147,6 +159,22 @@ def analyze_with_llm(pr_info: Dict, changed_files: List[Dict], diff_analysis: Di
 - Don't invent or guess details - base analysis on real code
 - Focus on concrete changes, not hypothetical scenarios
 - Be factual and precise
+- IMPORTANT: Distinguish between "what the code does" vs "what dependencies/APIs it uses"
+
+**DEPENDENCY ANALYSIS RULES:**
+- Only mention dependencies that are EXPLICITLY added/removed in package.json or package-lock.json
+- Don't assume dependencies based on imports - check if they're actually added
+- If no package.json changes, say "No dependency changes detected"
+- Be specific about version numbers only if they appear in the diff
+- IMPORTANT: If you see imports but no package.json changes, say "Uses existing dependencies"
+- CRITICAL: Look for actual "+" lines in package.json files, not just imports in code files"
+
+**API ANALYSIS RULES:**
+- Only mention APIs that are EXPLICITLY called or modified in the code
+- Don't assume API usage based on function names - check actual implementation
+- Be specific about method names and parameters as they appear in the code
+- If no API changes, say "No API changes detected"
+- IMPORTANT: Don't invent method names - use only what's visible in the diff
 
 **JSON Requirements:**
 - Use double quotes for all strings
@@ -317,7 +345,7 @@ def main():
         
         # Generate AI analysis (only if no existing review)
         print("🤖 Generating AI analysis...")
-        analysis = analyze_with_llm(pr_info, changed_files, diff_analysis, anthropic_api_key)
+        analysis = analyze_with_llm(pr_info, changed_files, diff_analysis, diff_content, anthropic_api_key)
         
         # Generate and post comment
         print("📝 Generating review comment...")
