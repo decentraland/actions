@@ -123,22 +123,6 @@ def analyze_with_llm(pr_info: Dict, changed_files: List[Dict], diff_analysis: Di
 - Title: {pr_info['title']}
 - Description: {pr_info['body'] or 'No description'}
 - Author: {pr_info['user']['login']}
-- Files changed: {len(changed_files)}
-- Additions: +{pr_info['additions']}
-- Deletions: -{pr_info['deletions']}
-
-**Changed Files:**
-"""
-    
-    for file_info in changed_files[:10]:  # Limit to first 10
-        context += f"- {file_info['filename']} ({file_info['status']})\n"
-    
-    context += f"""
-**Analysis Summary:**
-- Total changes: {diff_analysis['total_changes']}
-- File types: {', '.join([f'{k}: {v}' for k, v in diff_analysis['file_types'].items()])}
-- APIs used: {', '.join(diff_analysis['apis_used'][:5])}
-- Environment variables: {', '.join(diff_analysis['env_vars'][:5])}
 
 **DIFF CONTENT:**
 {diff_content}
@@ -150,38 +134,31 @@ def analyze_with_llm(pr_info: Dict, changed_files: List[Dict], diff_analysis: Di
   "risk_assessment": "Risk level (LOW/MEDIUM/HIGH/CRITICAL) with explanation and main risks (MAX 800 chars - be concise)",
   "api_impact": "API changes analysis (MAX 500 chars - be concise)",
   "dependency_impact": "Dependency analysis (MAX 300 chars - be concise)",
+  "suggested_tests": "Specific test suggestions and checklist items (MAX 400 chars - be concise)",
   "code_quality": "Quality assessment (MAX 200 chars - be concise)"
 }}
 
-**CRITICAL ANALYSIS REQUIREMENTS:**
+**ANALYSIS RULES:**
 - Analyze ONLY the actual code changes shown in the diff
 - Use exact parameter names, function names, and API calls from the code
 - Don't invent or guess details - base analysis on real code
-- Focus on concrete changes, not hypothetical scenarios
 - Be factual and precise
-- IMPORTANT: Distinguish between "what the code does" vs "what dependencies/APIs it uses"
+- Only mention EXPLICITLY added/changed items
+- If no changes detected, say "No [type] changes detected"
 
-**DEPENDENCY ANALYSIS RULES:**
-- Only mention dependencies that are EXPLICITLY added/removed in package.json or package-lock.json
+**DEPENDENCY RULES:**
 - Don't assume dependencies based on imports - check if they're actually added
-- If no package.json changes, say "No dependency changes detected"
 - Be specific about version numbers only if they appear in the diff
 - IMPORTANT: If you see imports but no package.json changes, say "Uses existing dependencies"
-- CRITICAL: Look for actual "+" lines in package.json files, not just imports in code files"
+- CRITICAL: Look for actual "+" lines in package.json files, not just imports in code files
 
-**API ANALYSIS RULES:**
-- Only mention APIs that are EXPLICITLY called or modified in the code
-- Don't assume API usage based on function names - check actual implementation
+**API RULES:**
+- Don't assume API usage - check actual implementation
 - Be specific about method names and parameters as they appear in the code
-- If no API changes, say "No API changes detected"
 - IMPORTANT: Don't invent method names - use only what's visible in the diff
 
 **JSON Requirements:**
-- Use double quotes for all strings
-- No trailing commas
-- Escape quotes in strings with \"
 - Character limits are MAXIMUM - write concisely, don't pad with filler words
-- Ensure valid JSON syntax
 """
     
     try:
