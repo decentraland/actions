@@ -6,4 +6,6 @@ services:
     volumes:
       - ../index.py:/app/index.py
       - ./output:/app/output
+     # only uncomment for local test 
+     # - ../local_test/index_2.py:/app/index_2.py
     working_dir: /app
