@@ -24,7 +24,7 @@ on:
         default: false
         type: boolean
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
   issue_comment:
     types: [created, edited]
 
@@ -36,6 +36,7 @@ jobs:
       github.event_name == 'workflow_call' ||
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'pull_request' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'ai-review') ||
       (github.event_name == 'issue_comment' && 
        github.event.issue.pull_request &&
        contains(github.event.comment.body, 'ai-review'))
@@ -46,7 +47,11 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_call" ]; then
             echo "🤖 AI Review called from external workflow! Running analysis..."
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "🤖 AI Review triggered! Running analysis..."
+            if [ "${{ github.event.label.name }}" = "ai-review" ]; then
+              echo "🤖 AI Review triggered by label! Running analysis..."
+            else
+              echo "🤖 AI Review triggered! Running analysis..."
+            fi
             echo "📋 This will analyze your PR and post a detailed review comment."
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "🤖 AI Review manually triggered! Running analysis..."
