@@ -6,11 +6,14 @@ on:
       force_refresh:
         description: 'Force refresh analysis (ignore cache)'
         required: false
-        default: 'false'
+        default: false
         type: boolean
+      script_branch:
+        description: 'Branch to download the script from'
+        required: false
+        default: 'main'
+        type: string
     secrets:
-      GITHUB_TOKEN:
-        required: true
       ANTHROPIC_API_KEY:
         required: true
   workflow_dispatch:
@@ -18,7 +21,7 @@ on:
       force_refresh:
         description: 'Force refresh analysis (ignore cache)'
         required: false
-        default: 'false'
+        default: false
         type: boolean
   pull_request:
     types: [opened, synchronize, reopened]
@@ -69,7 +72,10 @@ jobs:
 
       - name: Download AI Reviewer Script
         run: |
-          curl -o ai_reviewer.py https://raw.githubusercontent.com/decentraland/actions/main/scripts/ai_pr_reviewer/index.py
+          # Use the branch from the input parameter
+          BRANCH="${{ inputs.script_branch || 'main' }}"
+          echo "Downloading script from branch: $BRANCH"
+          curl -o ai_reviewer.py https://raw.githubusercontent.com/decentraland/actions/$BRANCH/scripts/ai_pr_reviewer/index.py
 
       - name: Run AI PR Review
         env:
