@@ -42,6 +42,18 @@ jobs:
        contains(github.event.comment.body, 'ai-review'))
     
     steps:
+      - name: Debug Event Info
+        run: |
+          echo "🔍 Event name: ${{ github.event_name }}"
+          echo "🔍 Event action: ${{ github.event.action }}"
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            echo "🔍 Comment body: ${{ github.event.comment.body }}"
+            echo "🔍 Is PR: ${{ github.event.issue.pull_request }}"
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "🔍 Label name: ${{ github.event.label.name }}"
+          fi
+      
       - name: AI Review Status
         run: |
           if [ "${{ github.event_name }}" = "workflow_call" ]; then
