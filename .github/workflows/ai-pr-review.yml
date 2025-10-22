@@ -23,24 +23,12 @@ on:
         required: false
         default: false
         type: boolean
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-  issue_comment:
-    types: [created, edited]
 
 jobs:
   ai-review:
     runs-on: ubuntu-latest
-    # environment: ai-review  # TEMPORALMENTE COMENTADO PARA DEBUG
-    if: |
-      github.event_name == 'workflow_call' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'pull_request' && github.event.label.name == 'ai-review') ||
-      (github.event_name == 'issue_comment' && 
-       github.event.issue.pull_request &&
-       contains(github.event.comment.body, 'ai-review'))
-    
+    environment: ai-review
+
     steps:
       - name: Debug Event Info
         run: |
