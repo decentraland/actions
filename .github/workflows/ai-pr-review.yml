@@ -1,6 +1,18 @@
 name: AI Pull Request Review
 
 on:
+  workflow_call:
+    inputs:
+      force_refresh:
+        description: 'Force refresh analysis (ignore cache)'
+        required: false
+        default: 'false'
+        type: boolean
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+      ANTHROPIC_API_KEY:
+        required: true
   workflow_dispatch:
     inputs:
       force_refresh:
@@ -18,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ai-review
     if: |
+      github.event_name == 'workflow_call' ||
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' && 
@@ -27,7 +40,9 @@ jobs:
     steps:
       - name: AI Review Status
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "${{ github.event_name }}" = "workflow_call" ]; then
+            echo "🤖 AI Review called from external workflow! Running analysis..."
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "🤖 AI Review triggered! Running analysis..."
             echo "📋 This will analyze your PR and post a detailed review comment."
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
