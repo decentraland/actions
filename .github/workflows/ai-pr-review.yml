@@ -8,19 +8,34 @@ on:
         required: false
         default: 'false'
         type: boolean
+  pull_request:
+    types: [opened, synchronize, reopened]
   issue_comment:
     types: [created, edited]
 
 jobs:
   ai-review:
     runs-on: ubuntu-latest
+    environment: ai-review
     if: |
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' && 
        github.event.issue.pull_request &&
        contains(github.event.comment.body, '/ai-review'))
     
     steps:
+      - name: AI Review Status
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "🤖 AI Review triggered! Running analysis..."
+            echo "📋 This will analyze your PR and post a detailed review comment."
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "🤖 AI Review manually triggered! Running analysis..."
+          elif [ "${{ github.event_name }}" = "issue_comment" ]; then
+            echo "🤖 AI Review triggered by comment! Running analysis..."
+          fi
+      
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
