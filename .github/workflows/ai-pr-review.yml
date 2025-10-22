@@ -94,15 +94,32 @@ jobs:
         if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
-          if [ -f "review_comment.md" ]; then
+          # Debug: Show what we're looking for
+          echo "🔍 Looking for PR number: $PR_NUMBER"
+          echo "🔍 Search pattern: review_comment_pr_${PR_NUMBER}_*.md"
+          echo "🔍 Files in output directory:"
+          ls -la output/ || echo "Output directory does not exist"
+          echo ""
+          
+          # Find the generated comment file using exact pattern
+          COMMENT_FILE=$(find output -name "review_comment_pr_${PR_NUMBER}_*.md" | head -1)
+          echo "🔍 Found file: '$COMMENT_FILE'"
+          
+          if [ -f "$COMMENT_FILE" ]; then
+            echo "✅ Found comment file: $COMMENT_FILE"
             python -c "
           import requests
           import os
           import json
+          import sys
           
-          # Read comment
-          with open('review_comment.md', 'r') as f:
+          # Read comment from the found file
+          comment_file = '$COMMENT_FILE'
+          with open(comment_file, 'r') as f:
               comment = f.read()
           
           # Post comment
@@ -118,5 +135,9 @@ jobs:
               print('✅ Comment posted successfully')
           else:
               print(f'❌ Failed to post comment: {response.status_code}')
+              print(f'Response: {response.text}')
           "
+          else
+            echo "❌ No comment file found in output directory"
+            ls -la output/ || echo "Output directory does not exist"
           fi
