@@ -31,7 +31,7 @@ on:
 jobs:
   ai-review:
     runs-on: ubuntu-latest
-    environment: ai-review
+    # environment: ai-review  # TEMPORALMENTE COMENTADO PARA DEBUG
     if: |
       github.event_name == 'workflow_call' ||
       github.event_name == 'workflow_dispatch' ||
