@@ -1,3 +1,18 @@
+# Decentraland Actions
+
+A collection of reusable GitHub Actions for Decentraland repositories.
+
+## Table of Contents
+
+- [validate-pr-title](#validate-pr-title)
+  - [Integration](#integration)
+- [AI Pull Request Reviewer](#ai-pull-request-reviewer)
+  - [Usage](#usage)
+  - [Setup](#setup)
+  - [Testing](#testing)
+
+---
+
 # validate-pr-title
 
 It's a workflow that enforces every pr's title to follow our [Git style guide](https://github.com/decentraland/adr/blob/main/docs/ADR-6-git-style-guide.md).
@@ -23,115 +38,38 @@ It's a workflow that enforces every pr's title to follow our [Git style guide](h
 
 ## AI Pull Request Reviewer
 
-An ultra-simple AI-powered PR review system that analyzes code impact and dependencies.
+An AI-powered PR review system that analyzes code impact and dependencies, providing automated code reviews with risk assessment and actionable feedback.
 
-**Features:**
-- Single-file solution (no external dependencies file)
-- Self-contained GitHub Action with embedded dependencies
-- Code and dependency analysis
-- External API and environment variable detection
-- Indirect directory impact identification
-- Manual trigger or comment trigger `/ai-review`
+### Usage
 
-**Usage:**
 ```yaml
 name: AI Pull Request Review
+
 on:
   workflow_dispatch:
+  pull_request:
+    types: [labeled]
   issue_comment:
     types: [created, edited]
 
 jobs:
   ai-review:
+    if: |
+      (github.event_name == 'pull_request' && github.event.label.name == 'ai-review') ||
+      (github.event_name == 'issue_comment' && 
+       github.event.issue.pull_request &&
+       github.event.comment.body == 'ai-review')
     uses: decentraland/actions/.github/workflows/ai-pr-review.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-**Setup:**
-1. Copy `.github/workflows/ai-pr-review.yml` to your workflows
-2. Add `ANTHROPIC_API_KEY` secret
-3. Done! The script downloads automatically.
+### Setup
+1. **Add the workflow** to your repository using one of the options above
+2. **Add `ANTHROPIC_API_KEY`** as a repository or organization secret
+3. **Done!** The script downloads automatically from the main branch
 
-## Testing
+### Testing
 
-### Local Testing with Docker
-
-The easiest way to test the AI reviewer without installing Python on your system:
-
-1. **Navigate to test directory:**
-   ```bash
-   cd test
-   ```
-
-2. **Set up environment:**
-   ```bash
-   cp ../env.example ../.env
-   # Edit .env with your GitHub token and Anthropic API key
-   ```
-
-3. **Test with Docker Compose:**
-   ```bash
-   # Run tests
-   docker-compose run --rm test
-   
-   # Test the reviewer on a specific PR
-   docker-compose run --rm ai-reviewer python ai_reviewer.py \
-     --pr-number 123 \
-     --repo-owner your-org \
-     --repo-name your-repo
-   ```
-
-3. **Check output:**
-   - The script generates a `review_comment.md` file with the AI review
-   - Review the generated comment for accuracy and completeness
-
-### Manual Testing
-
-**Test with a real PR:**
-```bash
-# Navigate to test directory first
-cd test
-
-# Replace with actual values
-docker-compose run --rm ai-reviewer python ai_reviewer.py \
-  --pr-number 456 \
-  --repo-owner decentraland \
-  --repo-name marketplace
-```
-
-**Test different PR types:**
-- Small bug fixes (should be LOW risk)
-- Large refactoring (should be MEDIUM/HIGH risk)
-- API changes (should detect breaking changes)
-- New dependencies (should flag dependency impact)
-
-### Validation Checklist
-
-When testing, verify the AI reviewer correctly identifies:
-- [ ] **Risk level** matches the actual impact
-- [ ] **API changes** are detected and flagged
-- [ ] **Environment variables** are identified
-- [ ] **Dependencies** are analyzed for impact
-- [ ] **Code quality** assessment is reasonable
-- [ ] **Suggested tests** are relevant and actionable
-- [ ] **Directory impact** analysis is accurate
-
-### Troubleshooting Tests
-
-**Common issues:**
-- **API key errors:** Check your root `.env` file has correct keys
-- **Permission errors:** Ensure GitHub token has `repo` or `public_repo` scope
-- **Rate limiting:** Wait between test runs if hitting API limits
-- **Empty reviews:** Check if PR has actual code changes
-
-**Debug mode:**
-```bash
-# Navigate to test directory first
-cd test
-
-# Run with verbose output
-docker-compose run --rm ai-reviewer python ai_reviewer.py \
-  --pr-number 123 \
-  --repo-owner your-org \
-  --repo-name your-repo \
-  --verbose
-```
+For detailed testing instructions, see [scripts/ai_pr_reviewer/test/README.md](scripts/ai_pr_reviewer/test/README.md)
