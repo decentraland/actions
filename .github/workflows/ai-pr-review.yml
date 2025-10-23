@@ -2,22 +2,10 @@ name: AI Pull Request Review
 
 on:
   workflow_call:
-    inputs:
-      force_refresh:
-        description: 'Force refresh analysis (ignore cache)'
-        required: false
-        default: false
-        type: boolean
     secrets:
       ANTHROPIC_API_KEY:
         required: true
   workflow_dispatch:
-    inputs:
-      force_refresh:
-        description: 'Force refresh analysis (ignore cache)'
-        required: false
-        default: false
-        type: boolean
 
 jobs:
   ai-review:
