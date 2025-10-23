@@ -1,7 +1,5 @@
 # AI PR Reviewer Testing
 
-Comprehensive testing guide for the AI PR Reviewer system using Docker.
-
 ## Prerequisites
 
 - Docker installed on your system
