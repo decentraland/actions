@@ -93,7 +93,7 @@ jobs:
             --repo-name "$REPO_NAME"
 
       - name: Comment on PR
-        if: always()
+        if: success()
         run: |
           # Find the generated comment file using exact pattern
           COMMENT_FILE=$(find output -name "review_comment_pr_${PR_NUMBER}_*.md" | head -1)
