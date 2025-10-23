@@ -11,28 +11,25 @@ import requests
 from anthropic import Anthropic
 
 
-def get_pr_info(repo_owner: str, repo_name: str, pr_number: int, token: str) -> Dict:
-    """Get PR information from GitHub API"""
-    url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls/{pr_number}"
+def get_pr_data(repo_owner: str, repo_name: str, pr_number: int, token: str) -> tuple[Dict, List[Dict], str]:
+    """Get all PR data in a single optimized call - PR info, files, and diff"""
+    # Get PR info
+    pr_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls/{pr_number}"
     headers = {"Authorization": f"token {token}"}
     
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.json()
-
-
-def get_pr_diff(repo_owner: str, repo_name: str, pr_number: int, token: str) -> str:
-    """Get PR diff from GitHub API - uses files API for final state"""
-    url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls/{pr_number}/files"
-    headers = {"Authorization": f"token {token}"}
+    pr_response = requests.get(pr_url, headers=headers)
+    pr_response.raise_for_status()
+    pr_info = pr_response.json()
     
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    files = response.json()
+    # Get files with diff content (this endpoint has everything we need)
+    files_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls/{pr_number}/files"
+    files_response = requests.get(files_url, headers=headers)
+    files_response.raise_for_status()
+    changed_files = files_response.json()
     
-    # Build diff from files (final state only)
+    # Build diff content from files
     diff_content = ""
-    for file in files:
+    for file in changed_files:
         if file['status'] in ['added', 'modified', 'removed']:
             diff_content += f"diff --git a/{file['filename']} b/{file['filename']}\n"
             diff_content += f"--- a/{file['filename']}\n"
@@ -40,17 +37,7 @@ def get_pr_diff(repo_owner: str, repo_name: str, pr_number: int, token: str) -> 
             if file.get('patch'):
                 diff_content += file['patch'] + "\n"
     
-    return diff_content
-
-
-def get_pr_files(repo_owner: str, repo_name: str, pr_number: int, token: str) -> List[Dict]:
-    """Get changed files from GitHub API"""
-    url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls/{pr_number}/files"
-    headers = {"Authorization": f"token {token}"}
-    
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.json()
+    return pr_info, changed_files, diff_content
 
 
 def analyze_diff(diff_content: str) -> Dict:
@@ -112,7 +99,7 @@ def analyze_diff(diff_content: str) -> Dict:
     }
 
 
-def analyze_with_llm(pr_info: Dict, changed_files: List[Dict], diff_analysis: Dict, diff_content:str, api_key: str) -> Dict:
+def analyze_with_llm(pr_info: Dict, diff_content: str, api_key: str) -> Dict:
     """Analyze PR with Anthropic Claude"""
     
     client = Anthropic(api_key=api_key)
@@ -195,8 +182,6 @@ def analyze_with_llm(pr_info: Dict, changed_files: List[Dict], diff_analysis: Di
         except json.JSONDecodeError as e:
             print(f"❌ JSON parsing failed: {e}")
             print(f"📄 Raw response length: {len(content)} characters")
-            print(f"📄 Full raw response:")
-            print(content)
             
             # Return only the raw response when parsing fails
             return {
@@ -217,32 +202,14 @@ def analyze_with_llm(pr_info: Dict, changed_files: List[Dict], diff_analysis: Di
         }
 
 
-def post_comment(repo_owner: str, repo_name: str, pr_number: int, comment: str, token: str) -> bool:
-    """Post comment on PR"""
-    url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/issues/{pr_number}/comments"
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    
-    data = {"body": comment}
-    
-    try:
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        return True
-    except Exception as e:
-        print(f"Error posting comment: {e}")
-        return False
-
-
-def generate_comment(pr_info: Dict, analysis: Dict, diff_analysis: Dict) -> str:
+def generate_comment(pr_info: Dict, analysis: Dict, commit_sha: str = None) -> str:
     """Generate markdown comment"""
     
     comment = f"""## 🤖 AI Pull Request Review
 
 **PR:** #{pr_info['number']} - {pr_info['title']}  
 **Author:** @{pr_info['user']['login']}  
+**Commit:** `{commit_sha}`  
 **Generated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
 
 ---
@@ -293,9 +260,10 @@ def main():
     try:
         print(f"🔍 Starting AI review for PR #{args.pr_number}")
         
-        # Get PR information first to check for existing reviews
-        pr_info = get_pr_info(args.repo_owner, args.repo_name, args.pr_number, github_token)
+        # Get all PR data in one optimized call
+        pr_info, changed_files, diff_content = get_pr_data(args.repo_owner, args.repo_name, args.pr_number, github_token)
         print(f"📋 PR: {pr_info['title']}")
+        print(f"📁 {len(changed_files)} files changed")
         
         # Check if review already exists for this commit (before expensive AI call)
         output_dir = 'output'
@@ -311,22 +279,17 @@ def main():
         
         print(f"🔗 Commit SHA: {pr_head_sha}")
         
-        # Get changed files
-        changed_files = get_pr_files(args.repo_owner, args.repo_name, args.pr_number, github_token)
-        print(f"📁 {len(changed_files)} files changed")
-        
-        # Get diff and analyze
-        diff_content = get_pr_diff(args.repo_owner, args.repo_name, args.pr_number, github_token)
+        # Analyze diff
         diff_analysis = analyze_diff(diff_content)
         print(f"🔍 Analysis: {diff_analysis['total_changes']} total changes")
         
         # Generate AI analysis (only if no existing review)
         print("🤖 Generating AI analysis...")
-        analysis = analyze_with_llm(pr_info, changed_files, diff_analysis, diff_content, anthropic_api_key)
+        analysis = analyze_with_llm(pr_info, diff_content, anthropic_api_key)
         
         # Generate and post comment
         print("📝 Generating review comment...")
-        comment = generate_comment(pr_info, analysis, diff_analysis)
+        comment = generate_comment(pr_info, analysis, pr_head_sha)
         
         # Write comment to file for GitHub Action
         with open(output_file, 'w') as f:
