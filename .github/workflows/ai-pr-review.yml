@@ -8,11 +8,6 @@ on:
         required: false
         default: false
         type: boolean
-      script_branch:
-        description: 'Branch to download the script from'
-        required: false
-        default: 'main'
-        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -30,35 +25,6 @@ jobs:
     environment: ai-review
 
     steps:
-      - name: Debug Event Info
-        run: |
-          echo "🔍 Event name: ${{ github.event_name }}"
-          echo "🔍 Event action: ${{ github.event.action }}"
-          if [ "${{ github.event_name }}" = "issue_comment" ]; then
-            echo "🔍 Comment body: ${{ github.event.comment.body }}"
-            echo "🔍 Is PR: ${{ github.event.issue.pull_request }}"
-          fi
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "🔍 Label name: ${{ github.event.label.name }}"
-          fi
-      
-      - name: AI Review Status
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_call" ]; then
-            echo "🤖 AI Review called from external workflow! Running analysis..."
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            if [ "${{ github.event.label.name }}" = "ai-review" ]; then
-              echo "🤖 AI Review triggered by label! Running analysis..."
-            else
-              echo "🤖 AI Review triggered! Running analysis..."
-            fi
-            echo "📋 This will analyze your PR and post a detailed review comment."
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "🤖 AI Review manually triggered! Running analysis..."
-          elif [ "${{ github.event_name }}" = "issue_comment" ]; then
-            echo "🤖 AI Review triggered by comment! Running analysis..."
-          fi
-      
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -77,10 +43,7 @@ jobs:
 
       - name: Download AI Reviewer Script
         run: |
-          # Use the branch from the input parameter
-          BRANCH="${{ inputs.script_branch || 'main' }}"
-          echo "Downloading script from branch: $BRANCH"
-          curl -o ai_reviewer.py https://raw.githubusercontent.com/decentraland/actions/$BRANCH/scripts/ai_pr_reviewer/index.py
+          curl -o ai_reviewer.py "https://raw.githubusercontent.com/decentraland/actions/main/scripts/ai_pr_reviewer/index.py"
 
       - name: Run AI PR Review
         env:
@@ -112,10 +75,9 @@ jobs:
           
           # Find the generated comment file using exact pattern
           COMMENT_FILE=$(find output -name "review_comment_pr_${PR_NUMBER}_*.md" | head -1)
-          echo "🔍 Found file: '$COMMENT_FILE'"
+          echo "🔍 Found file"
           
           if [ -f "$COMMENT_FILE" ]; then
-            echo "✅ Found comment file: $COMMENT_FILE"
             python -c "
           import requests
           import os
@@ -140,9 +102,7 @@ jobs:
               print('✅ Comment posted successfully')
           else:
               print(f'❌ Failed to post comment: {response.status_code}')
-              print(f'Response: {response.text}')
           "
           else
             echo "❌ No comment file found in output directory"
-            ls -la output/ || echo "Output directory does not exist"
           fi
