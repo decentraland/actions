@@ -1,0 +1,134 @@
+name: AI Pull Request Review
+
+on:
+  workflow_call:
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+  workflow_dispatch:
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    environment: ai-review
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      REPO_OWNER: ${{ github.repository_owner }}
+      REPO_NAME: ${{ github.event.repository.name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-ai-reviewer-${{ hashFiles('**/python-version') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-ai-reviewer-
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --cache-dir ~/.cache/pip requests>=2.31.0 anthropic>=0.7.0
+
+      - name: Download AI Reviewer Script
+        run: |
+          cp scripts/ai_pr_reviewer/index.py ai_reviewer.py
+
+      - name: Check for Existing Comment
+        run: |
+          # Get current commit SHA
+          COMMIT_SHA=$(git rev-parse HEAD)
+          
+          python -c "
+          import requests
+          import os
+          import sys
+          
+          # Get environment variables once
+          commit_sha = '$COMMIT_SHA'
+          pr_number = os.getenv('PR_NUMBER')
+          repo_owner = os.getenv('REPO_OWNER')
+          repo_name = os.getenv('REPO_NAME')
+          github_token = os.getenv('GITHUB_TOKEN')
+          
+          # Get existing comments
+          comments_url = f'https://api.github.com/repos/{repo_owner}/{repo_name}/issues/{pr_number}/comments'
+          headers = {
+              'Authorization': f'token {github_token}',
+              'Accept': 'application/vnd.github.v3+json'
+          }
+          
+          response = requests.get(comments_url, headers=headers)
+          if response.status_code == 200:
+              comments = response.json()
+              # Check if any comment contains this commit SHA
+              for existing_comment in comments:
+                  if commit_sha in existing_comment['body']:
+                      print(f'✅ Comment already exists for commit {commit_sha}')
+                      sys.exit(1)
+          
+          print(f'🔄 No existing comment found for commit {commit_sha}, proceeding with AI analysis')
+          "
+
+      - name: Run AI PR Review
+        if: success()
+        run: |
+          python ai_reviewer.py \
+            --pr-number "$PR_NUMBER" \
+            --repo-owner "$REPO_OWNER" \
+            --repo-name "$REPO_NAME"
+
+      - name: Comment on PR
+        if: success()
+        run: |
+          # Find the generated comment file using exact pattern
+          COMMENT_FILE=$(find output -name "review_comment_pr_${PR_NUMBER}_*.md" | head -1)
+          
+          if [ -f "$COMMENT_FILE" ]; then
+            python -c "
+          import requests
+          import os
+          
+          # Get environment variables (same pattern as duplicate check)
+          pr_number = os.getenv('PR_NUMBER')
+          repo_owner = os.getenv('REPO_OWNER')
+          repo_name = os.getenv('REPO_NAME')
+          github_token = os.getenv('GITHUB_TOKEN')
+          
+          # Read comment from the found file (safe path)
+          comment_file = '$COMMENT_FILE'
+          with open(comment_file, 'r') as f:
+              comment = f.read()
+          
+          # Post comment (duplicate check already done)
+          
+          url = f'https://api.github.com/repos/{repo_owner}/{repo_name}/issues/{pr_number}/comments'
+          headers = {
+              'Authorization': f'token {github_token}',
+              'Accept': 'application/vnd.github.v3+json'
+          }
+          data = {'body': comment}
+          
+          response = requests.post(url, headers=headers, json=data)
+          if response.status_code == 201:
+              print('✅ Comment posted successfully')
+          else:
+              print(f'❌ Failed to post comment: {response.status_code}')
+          "
+          else
+            echo "❌ No comment file found in output directory"
+          fi
