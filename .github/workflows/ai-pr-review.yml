@@ -46,7 +46,7 @@ jobs:
 
       - name: Download AI Reviewer Script
         run: |
-          curl -o ai_reviewer.py "https://raw.githubusercontent.com/decentraland/actions/main/scripts/ai_pr_reviewer/index.py"
+          cp scripts/ai_pr_reviewer/index.py ai_reviewer.py
 
       - name: Check for Existing Comment
         run: |
