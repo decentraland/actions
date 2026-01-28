@@ -1,9 +1,12 @@
-name: validate-pr-title
+name: Validate PR Title
 
 on:
   pull_request:
     types: [edited, opened, reopened, synchronize]
   workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   title-matches-convention:
