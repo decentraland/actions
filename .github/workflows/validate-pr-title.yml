@@ -9,7 +9,7 @@ permissions:
   pull-requests: read
 
 jobs:
-  semantic:
+  title-matches-convention:
     runs-on: ubuntu-latest
     steps:
       - uses: decentraland/action-semantic-pull-request@main
