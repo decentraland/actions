@@ -1,0 +1,26 @@
+name: PR Comment Reminder
+
+on:
+  workflow_call:
+    inputs:
+      message:
+        description: "The markdown message to post as a comment on the PR"
+        required: true
+        type: string
+
+permissions:
+  pull-requests: write
+
+jobs:
+  add-reminder-comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add reminder comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MESSAGE: ${{ inputs.message }}
+        run: |
+          gh api \
+            repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
+            -f body="$MESSAGE"
