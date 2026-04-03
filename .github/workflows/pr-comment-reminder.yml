@@ -25,4 +25,4 @@ jobs:
             echo "::error::No pull request number found. This workflow must be triggered by a pull_request event."
             exit 1
           fi
-          gh pr comment "$PR_NUMBER" --body "$MESSAGE"
+          echo "$MESSAGE" | gh pr comment "$PR_NUMBER" --body-file -
