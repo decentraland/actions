@@ -21,4 +21,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           MESSAGE: ${{ inputs.message }}
         run: |
+          if [ -z "$PR_NUMBER" ]; then
+            echo "::error::No pull request number found. This workflow must be triggered by a pull_request event."
+            exit 1
+          fi
           gh pr comment "$PR_NUMBER" --body "$MESSAGE"
