@@ -18,15 +18,37 @@ export type NamespaceMap = {
   org?: string;
 };
 
+/**
+ * What the action will do, derived from which inputs are present:
+ * - `deploy`   — upload the built `folder` to `<packageName>/<version>/`.
+ * - `redeploy` — copy an already-uploaded `<packageName>/<sourceVersion>/` to
+ *   `<packageName>/<version>/` (no rebuild), e.g. promoting a dev build to a
+ *   release tag.
+ * - `repoint`  — only move the KV pointer to an already-uploaded `version`.
+ */
+export type DeployMode = "deploy" | "redeploy" | "repoint";
+
+export type DeployPlan = {
+  mode: DeployMode;
+  packageName: string;
+  /** The version the KV record will point at and the S3 target prefix. */
+  version: string;
+  /** Only set for `redeploy`: the version whose objects are copied from. */
+  sourceVersion?: string;
+};
+
 /** Fully-resolved, validated action inputs. */
 export type ActionInputs = {
+  /** Pre-built directory to upload. Empty in redeploy/repoint modes. */
   folder: string;
   packageName?: string;
   target: DeploymentTarget;
   deploymentName: string;
   percentage: number;
-  /** When set, skip the S3 upload and only patch the KV record (rollback / re-point). */
+  /** Explicit target version (e.g. a release tag). Required when no `folder`. */
   version?: string;
+  /** Source version to copy from (triggers redeploy mode). */
+  sourceVersion?: string;
   awsRegion: string;
   s3Bucket: string;
   cloudflareAccountId: string;
