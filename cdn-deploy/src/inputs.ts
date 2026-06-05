@@ -81,8 +81,10 @@ export function readPackageJson(folder: string): { name?: string; version?: stri
 
 /** Read and validate all action inputs from the environment via @actions/core. */
 export function readInputs(): ActionInputs {
-  const folder = core.getInput("folder", { required: true });
-  if (!fs.existsSync(folder)) {
+  // folder is optional: redeploy (source-version) and repoint (version) modes
+  // don't upload from disk. When provided, it must exist.
+  const folder = core.getInput("folder");
+  if (folder && !fs.existsSync(folder)) {
     throw new Error(`folder "${folder}" does not exist`);
   }
 
@@ -109,6 +111,7 @@ export function readInputs(): ActionInputs {
     deploymentName: core.getInput("deployment-name") || DEFAULT_ROLLOUT_NAME,
     percentage: parsePercentage(core.getInput("percentage")),
     version: core.getInput("version") || undefined,
+    sourceVersion: core.getInput("source-version") || undefined,
     awsRegion: core.getInput("aws-region") || "us-east-1",
     s3Bucket: core.getInput("s3-bucket") || DEFAULT_BUCKET,
     cloudflareAccountId: core.getInput("cloudflare-account-id", { required: true }),

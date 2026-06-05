@@ -6,10 +6,13 @@ branding:
 
 inputs:
   folder:
-    description: "Pre-built site directory to upload (e.g. ./dist)."
-    required: true
+    description: "Pre-built site directory to upload (e.g. ./dist). Required for a normal deploy; omit for redeploy (`source-version`) or repoint (`version`)."
+    required: false
+  source-version:
+    description: "Version already in S3 to copy FROM (`<package-name>/<source-version>/…`). When set, the action copies those objects to the target version's prefix instead of uploading `folder` — a no-rebuild redeploy / promote."
+    required: false
   package-name:
-    description: "CDN prefix / S3 key root / KV record prefix. Defaults to `name` from <folder>/package.json."
+    description: "CDN prefix / S3 key root / KV record prefix. Defaults to `name` from <folder>/package.json. Required when no `folder` is provided (redeploy/repoint)."
     required: false
   deployment-path:
     description: "Path-based KV key (e.g. `auth`). Provide exactly one of `deployment-path` or `domain`."
@@ -29,15 +32,15 @@ inputs:
     required: false
     default: "100"
   version:
-    description: "Explicit version to point the rollout at. When set, the S3 upload is SKIPPED and only the KV record is patched (rollback / re-point). Defaults to a computed deterministic snapshot."
+    description: "Target version. Defaults to a computed deterministic snapshot for a deploy. Provide it to deploy/redeploy under a specific version (e.g. a release tag), or alone (no `folder`/`source-version`) to repoint the KV at an already-uploaded version. Required when no `folder` is provided."
     required: false
   aws-region:
     description: "AWS region for STS / S3."
     required: false
     default: "us-east-1"
   aws-role-to-assume:
-    description: "IAM role ARN assumed via GitHub OIDC (no static AWS keys)."
-    required: true
+    description: "IAM role ARN assumed via GitHub OIDC (no static AWS keys). Required for deploy and redeploy (anything that touches S3); unused for a pure repoint."
+    required: false
   s3-bucket:
     description: "Target CDN S3 bucket."
     required: false
@@ -82,11 +85,17 @@ outputs:
   cdn-url:
     description: "<cdn-base-url>/<package-name>/<version> — where the worker serves the version from."
     value: ${{ steps.deploy.outputs.cdn-url }}
+  mode:
+    description: "What the action did: deploy | redeploy | repoint."
+    value: ${{ steps.deploy.outputs.mode }}
 
 runs:
   using: "composite"
   steps:
+    # Only needed when we touch S3 (deploy uploads, redeploy copies). A pure
+    # repoint (version only) writes just the KV pointer and needs no AWS creds.
     - name: Configure AWS credentials (OIDC)
+      if: ${{ inputs.folder != '' || inputs.source-version != '' }}
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ inputs.aws-role-to-assume }}
@@ -99,6 +108,7 @@ runs:
       run: node "$GITHUB_ACTION_PATH/dist/index.js"
       env:
         INPUT_FOLDER: ${{ inputs.folder }}
+        INPUT_SOURCE-VERSION: ${{ inputs.source-version }}
         INPUT_PACKAGE-NAME: ${{ inputs.package-name }}
         INPUT_DEPLOYMENT-PATH: ${{ inputs.deployment-path }}
         INPUT_DOMAIN: ${{ inputs.domain }}

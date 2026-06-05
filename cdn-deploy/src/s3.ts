@@ -27,3 +27,77 @@ export async function uploadFolderToS3(opts: {
     dryRun: opts.dryRun,
   });
 }
+
+/** Strip trailing slashes and append a single one. */
+function asPrefix(folder: string): string {
+  return folder.replace(/\/+$/, "") + "/";
+}
+
+/**
+ * Server-side copy of every object under `sourceFolder/` to `targetFolder/`
+ * within the same bucket — the no-rebuild redeploy.
+ *
+ * `@dcl/cdn-uploader` writes each compressible file as separate objects
+ * (`file`, `file.gzip`, `file.br`) with `public-read` ACL and per-object
+ * content metadata. Copying every object under the prefix with
+ * `MetadataDirective: "COPY"` (preserves ContentType / ContentEncoding /
+ * CacheControl / ContentDisposition) and `ACL: "public-read"` (copies do NOT
+ * carry the source ACL) reproduces exactly what a fresh upload would serve.
+ */
+export async function copyFolderInS3(opts: {
+  region: string;
+  bucket: string;
+  sourceFolder: string;
+  targetFolder: string;
+  concurrency?: number;
+  s3?: AWS.S3;
+}): Promise<number> {
+  const s3 = opts.s3 || new AWS.S3({ region: opts.region });
+  const srcPrefix = asPrefix(opts.sourceFolder);
+  const dstPrefix = asPrefix(opts.targetFolder);
+  const concurrency = opts.concurrency || 16;
+
+  let continuationToken: string | undefined;
+  let copied = 0;
+
+  do {
+    const listed = await s3
+      .listObjectsV2({
+        Bucket: opts.bucket,
+        Prefix: srcPrefix,
+        ContinuationToken: continuationToken,
+      })
+      .promise();
+
+    const keys = (listed.Contents || []).map((o) => o.Key).filter((k): k is string => !!k);
+
+    for (let i = 0; i < keys.length; i += concurrency) {
+      const batch = keys.slice(i, i + concurrency);
+      await Promise.all(
+        batch.map((sourceKey) => {
+          const targetKey = dstPrefix + sourceKey.slice(srcPrefix.length);
+          // CopySource must be `/<bucket>/<key>` with each path segment encoded
+          // (encodeURIComponent on the whole key would clobber the slashes).
+          const copySource = `/${opts.bucket}/${sourceKey.split("/").map(encodeURIComponent).join("/")}`;
+          return s3
+            .copyObject({
+              Bucket: opts.bucket,
+              CopySource: copySource,
+              Key: targetKey,
+              MetadataDirective: "COPY",
+              ACL: "public-read",
+            })
+            .promise();
+        })
+      );
+      copied += batch.length;
+    }
+
+    continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  if (copied === 0) {
+    throw new Error(`No objects found under s3://${opts.bucket}/${srcPrefix} to copy.`);
+  }
+  return copied;
+}

@@ -81583,7 +81583,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
 const inputs_1 = __nccwpck_require__(38422);
-const version_1 = __nccwpck_require__(311);
+const plan_1 = __nccwpck_require__(22464);
 const s3_1 = __nccwpck_require__(72049);
 const cloudflare_1 = __nccwpck_require__(42316);
 const slack_1 = __nccwpck_require__(16691);
@@ -81593,26 +81593,29 @@ async function run() {
     // package name + base version come from the built folder's package.json,
     // matching how oddish ran with `cwd: ./dist`. The whole runtime contract
     // hinges on `prefix === packageName`.
-    const pkg = (0, inputs_1.readPackageJson)(inputs.folder);
-    const packageName = inputs.packageName || pkg.name;
-    if (!packageName) {
-        throw new Error(`Unable to resolve package name. Set the \`package-name\` input or add a "name" to ${inputs.folder}/package.json.`);
-    }
-    const isRepoint = !!inputs.version;
-    const version = inputs.version ||
-        (0, version_1.computeVersion)({
-            baseVersion: pkg.version || "0.0.0",
-            runId: github.context.runId,
-            sha: github.context.sha,
-        });
+    const pkg = inputs.folder ? (0, inputs_1.readPackageJson)(inputs.folder) : {};
+    const plan = (0, plan_1.resolvePlan)({
+        folderPresent: !!inputs.folder,
+        sourceVersion: inputs.sourceVersion,
+        explicitVersion: inputs.version,
+        packageNameInput: inputs.packageName,
+        packageJson: pkg,
+        runId: github.context.runId,
+        sha: github.context.sha,
+    });
+    const { packageName, version } = plan;
     const remoteFolder = `${packageName}/${version}`;
     const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${version}`;
     core.setOutput("version", version);
     core.setOutput("s3-path", remoteFolder);
     core.setOutput("cdn-url", cdnUrl);
+    core.setOutput("mode", plan.mode);
     const key = (0, inputs_1.kvKeyForTarget)(inputs.target);
+    core.info(`mode:         ${plan.mode}`);
     core.info(`package:      ${packageName}`);
-    core.info(`version:      ${version}${isRepoint ? " (repoint — skipping upload)" : ""}`);
+    core.info(`version:      ${version}`);
+    if (plan.sourceVersion)
+        core.info(`source:       ${plan.sourceVersion}`);
     core.info(`environment:  ${inputs.target.environment}`);
     core.info(`kv key:       ${key} (namespace ${inputs.namespaceId})`);
     core.info(`cdn url:      ${cdnUrl}`);
@@ -81626,11 +81629,8 @@ async function run() {
     });
     await observability.start();
     try {
-        // 1) Upload to S3 (skipped when re-pointing to an already-uploaded version).
-        if (isRepoint) {
-            core.info("> Skipping S3 upload (version input provided).");
-        }
-        else {
+        // 1) Put the assets in place at <packageName>/<version>/ for this mode.
+        if (plan.mode === "deploy") {
             await core.group(`Uploading ${inputs.folder} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
                 const uploaded = await (0, s3_1.uploadFolderToS3)({
                     region: inputs.awsRegion,
@@ -81640,6 +81640,26 @@ async function run() {
                 });
                 core.info(`Uploaded ${uploaded.length} files.`);
             });
+        }
+        else if (plan.mode === "redeploy") {
+            const sourceFolder = `${packageName}/${plan.sourceVersion}`;
+            if (plan.sourceVersion === version) {
+                core.info(`> Source and target version match (${version}); skipping S3 copy.`);
+            }
+            else {
+                await core.group(`Copying s3://${inputs.s3Bucket}/${sourceFolder} -> ${remoteFolder}`, async () => {
+                    const copied = await (0, s3_1.copyFolderInS3)({
+                        region: inputs.awsRegion,
+                        bucket: inputs.s3Bucket,
+                        sourceFolder,
+                        targetFolder: remoteFolder,
+                    });
+                    core.info(`Copied ${copied} objects.`);
+                });
+            }
+        }
+        else {
+            core.info("> Repoint mode: no S3 operation, only moving the KV pointer.");
         }
         // 2) Patch the Cloudflare KV rollout record (read-modify-write).
         const kv = (0, cloudflare_1.createCloudflareKV)({
@@ -81812,8 +81832,10 @@ function readPackageJson(folder) {
 }
 /** Read and validate all action inputs from the environment via @actions/core. */
 function readInputs() {
-    const folder = core.getInput("folder", { required: true });
-    if (!fs.existsSync(folder)) {
+    // folder is optional: redeploy (source-version) and repoint (version) modes
+    // don't upload from disk. When provided, it must exist.
+    const folder = core.getInput("folder");
+    if (folder && !fs.existsSync(folder)) {
         throw new Error(`folder "${folder}" does not exist`);
     }
     const target = resolveTarget({
@@ -81833,6 +81855,7 @@ function readInputs() {
         deploymentName: core.getInput("deployment-name") || exports.DEFAULT_ROLLOUT_NAME,
         percentage: parsePercentage(core.getInput("percentage")),
         version: core.getInput("version") || undefined,
+        sourceVersion: core.getInput("source-version") || undefined,
         awsRegion: core.getInput("aws-region") || "us-east-1",
         s3Bucket: core.getInput("s3-bucket") || exports.DEFAULT_BUCKET,
         cloudflareAccountId: core.getInput("cloudflare-account-id", { required: true }),
@@ -81842,6 +81865,56 @@ function readInputs() {
         createGithubDeployment: core.getBooleanInput("create-github-deployment"),
         cdnBaseUrl: core.getInput("cdn-base-url") || exports.DEFAULT_CDN_BASE_URL,
     };
+}
+
+
+/***/ }),
+
+/***/ 22464:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.resolvePlan = resolvePlan;
+const version_1 = __nccwpck_require__(311);
+/**
+ * Decide what the action does from the inputs present. Pure and testable.
+ *
+ * - `source-version` set        -> redeploy (copy S3 objects, no rebuild)
+ * - else `folder` present       -> deploy (upload the built folder)
+ * - else `version` set          -> repoint (move the KV pointer only)
+ * - else                        -> error
+ *
+ * The target version is the explicit `version` input when given (e.g. a release
+ * tag), otherwise the computed deterministic snapshot. When there is no folder
+ * to derive a base version from, an explicit `version` is required.
+ */
+function resolvePlan(opts) {
+    const packageName = opts.packageNameInput || opts.packageJson.name;
+    if (!packageName) {
+        throw new Error("Unable to resolve package name. Set the `package-name` input or add a " +
+            '"name" to the built folder\'s package.json.');
+    }
+    const computeTarget = () => (0, version_1.computeVersion)({
+        baseVersion: opts.packageJson.version || "0.0.0",
+        runId: opts.runId,
+        sha: opts.sha,
+    });
+    if (opts.sourceVersion) {
+        const version = opts.explicitVersion || (opts.folderPresent ? computeTarget() : undefined);
+        if (!version) {
+            throw new Error("Redeploy requires a target `version` (e.g. the release tag) when no `folder` is provided.");
+        }
+        return { mode: "redeploy", packageName, version, sourceVersion: opts.sourceVersion };
+    }
+    if (opts.folderPresent) {
+        return { mode: "deploy", packageName, version: opts.explicitVersion || computeTarget() };
+    }
+    if (opts.explicitVersion) {
+        return { mode: "repoint", packageName, version: opts.explicitVersion };
+    }
+    throw new Error("Nothing to do: provide `folder` (deploy), `source-version` (redeploy), or `version` (repoint).");
 }
 
 
@@ -81887,6 +81960,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.uploadFolderToS3 = uploadFolderToS3;
+exports.copyFolderInS3 = copyFolderInS3;
 const AWS = __importStar(__nccwpck_require__(62605));
 const cdn_uploader_1 = __nccwpck_require__(71189);
 /**
@@ -81907,6 +81981,63 @@ async function uploadFolderToS3(opts) {
         concurrency: 10,
         dryRun: opts.dryRun,
     });
+}
+/** Strip trailing slashes and append a single one. */
+function asPrefix(folder) {
+    return folder.replace(/\/+$/, "") + "/";
+}
+/**
+ * Server-side copy of every object under `sourceFolder/` to `targetFolder/`
+ * within the same bucket — the no-rebuild redeploy.
+ *
+ * `@dcl/cdn-uploader` writes each compressible file as separate objects
+ * (`file`, `file.gzip`, `file.br`) with `public-read` ACL and per-object
+ * content metadata. Copying every object under the prefix with
+ * `MetadataDirective: "COPY"` (preserves ContentType / ContentEncoding /
+ * CacheControl / ContentDisposition) and `ACL: "public-read"` (copies do NOT
+ * carry the source ACL) reproduces exactly what a fresh upload would serve.
+ */
+async function copyFolderInS3(opts) {
+    const s3 = opts.s3 || new AWS.S3({ region: opts.region });
+    const srcPrefix = asPrefix(opts.sourceFolder);
+    const dstPrefix = asPrefix(opts.targetFolder);
+    const concurrency = opts.concurrency || 16;
+    let continuationToken;
+    let copied = 0;
+    do {
+        const listed = await s3
+            .listObjectsV2({
+            Bucket: opts.bucket,
+            Prefix: srcPrefix,
+            ContinuationToken: continuationToken,
+        })
+            .promise();
+        const keys = (listed.Contents || []).map((o) => o.Key).filter((k) => !!k);
+        for (let i = 0; i < keys.length; i += concurrency) {
+            const batch = keys.slice(i, i + concurrency);
+            await Promise.all(batch.map((sourceKey) => {
+                const targetKey = dstPrefix + sourceKey.slice(srcPrefix.length);
+                // CopySource must be `/<bucket>/<key>` with each path segment encoded
+                // (encodeURIComponent on the whole key would clobber the slashes).
+                const copySource = `/${opts.bucket}/${sourceKey.split("/").map(encodeURIComponent).join("/")}`;
+                return s3
+                    .copyObject({
+                    Bucket: opts.bucket,
+                    CopySource: copySource,
+                    Key: targetKey,
+                    MetadataDirective: "COPY",
+                    ACL: "public-read",
+                })
+                    .promise();
+            }));
+            copied += batch.length;
+        }
+        continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+    } while (continuationToken);
+    if (copied === 0) {
+        throw new Error(`No objects found under s3://${opts.bucket}/${srcPrefix} to copy.`);
+    }
+    return copied;
 }
 
 
