@@ -1,0 +1,120 @@
+name: "Deploy static site to CDN"
+description: "Upload a pre-built site folder straight to S3 (via GitHub OIDC) and set the Cloudflare KV rollout, in a single step."
+branding:
+  icon: "upload-cloud"
+  color: "blue"
+
+inputs:
+  folder:
+    description: "Pre-built site directory to upload (e.g. ./dist)."
+    required: true
+  package-name:
+    description: "CDN prefix / S3 key root / KV record prefix. Defaults to `name` from <folder>/package.json."
+    required: false
+  deployment-path:
+    description: "Path-based KV key (e.g. `auth`). Provide exactly one of `deployment-path` or `domain`."
+    required: false
+  domain:
+    description: "Domain-based KV key (e.g. `play.decentraland.org`). Provide exactly one of `deployment-path` or `domain`."
+    required: false
+  deployment-environment:
+    description: "Target environment: `zone` (dev), `today` (stg) or `org` (prod). Selects the Cloudflare KV namespace."
+    required: true
+  deployment-name:
+    description: "Rollout name (key into the KV `records` map)."
+    required: false
+    default: "_site"
+  percentage:
+    description: "Rollout percentage (0-100) for the deployed version."
+    required: false
+    default: "100"
+  version:
+    description: "Explicit version to point the rollout at. When set, the S3 upload is SKIPPED and only the KV record is patched (rollback / re-point). Defaults to a computed deterministic snapshot."
+    required: false
+  aws-region:
+    description: "AWS region for STS / S3."
+    required: false
+    default: "us-east-1"
+  aws-role-to-assume:
+    description: "IAM role ARN assumed via GitHub OIDC (no static AWS keys)."
+    required: true
+  s3-bucket:
+    description: "Target CDN S3 bucket."
+    required: false
+    default: "cdn-decentraland-org-contentbucket-371d0b7"
+  cloudflare-account-id:
+    description: "Cloudflare account id for the KV REST API."
+    required: true
+  cloudflare-api-token:
+    description: "Cloudflare API token scoped to Workers KV Storage: Edit on the rollout namespaces. The single secret this action needs."
+    required: true
+  cloudflare-namespace-id:
+    description: "Explicit Cloudflare KV namespace id. Overrides the per-environment mapping below."
+    required: false
+  cloudflare-namespace-zone:
+    description: "Cloudflare KV namespace id for `zone` (dev)."
+    required: false
+  cloudflare-namespace-today:
+    description: "Cloudflare KV namespace id for `today` (stg)."
+    required: false
+  cloudflare-namespace-org:
+    description: "Cloudflare KV namespace id for `org` (prod)."
+    required: false
+  slack-webhook:
+    description: "Incoming Slack webhook URL for the `rollouts` channel. Skipped if unset."
+    required: false
+  create-github-deployment:
+    description: "Create a GitHub deployment + commit status for observability."
+    required: false
+    default: "true"
+  cdn-base-url:
+    description: "CDN origin used to compute the cdn-url output."
+    required: false
+    default: "https://cdn.decentraland.org"
+
+outputs:
+  version:
+    description: "The deployed version (computed snapshot, or the `version` input)."
+    value: ${{ steps.deploy.outputs.version }}
+  s3-path:
+    description: "The S3 key prefix that was uploaded: <package-name>/<version>."
+    value: ${{ steps.deploy.outputs.s3-path }}
+  cdn-url:
+    description: "<cdn-base-url>/<package-name>/<version> — where the worker serves the version from."
+    value: ${{ steps.deploy.outputs.cdn-url }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws-role-to-assume }}
+        aws-region: ${{ inputs.aws-region }}
+        role-session-name: cdn-deploy-${{ github.run_id }}
+
+    - name: Deploy to CDN and set rollout
+      id: deploy
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/dist/index.js"
+      env:
+        INPUT_FOLDER: ${{ inputs.folder }}
+        INPUT_PACKAGE-NAME: ${{ inputs.package-name }}
+        INPUT_DEPLOYMENT-PATH: ${{ inputs.deployment-path }}
+        INPUT_DOMAIN: ${{ inputs.domain }}
+        INPUT_DEPLOYMENT-ENVIRONMENT: ${{ inputs.deployment-environment }}
+        INPUT_DEPLOYMENT-NAME: ${{ inputs.deployment-name }}
+        INPUT_PERCENTAGE: ${{ inputs.percentage }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_AWS-REGION: ${{ inputs.aws-region }}
+        INPUT_S3-BUCKET: ${{ inputs.s3-bucket }}
+        INPUT_CLOUDFLARE-ACCOUNT-ID: ${{ inputs.cloudflare-account-id }}
+        INPUT_CLOUDFLARE-API-TOKEN: ${{ inputs.cloudflare-api-token }}
+        INPUT_CLOUDFLARE-NAMESPACE-ID: ${{ inputs.cloudflare-namespace-id }}
+        INPUT_CLOUDFLARE-NAMESPACE-ZONE: ${{ inputs.cloudflare-namespace-zone }}
+        INPUT_CLOUDFLARE-NAMESPACE-TODAY: ${{ inputs.cloudflare-namespace-today }}
+        INPUT_CLOUDFLARE-NAMESPACE-ORG: ${{ inputs.cloudflare-namespace-org }}
+        INPUT_SLACK-WEBHOOK: ${{ inputs.slack-webhook }}
+        INPUT_CREATE-GITHUB-DEPLOYMENT: ${{ inputs.create-github-deployment }}
+        INPUT_CDN-BASE-URL: ${{ inputs.cdn-base-url }}
+        GITHUB_TOKEN: ${{ github.token }}
