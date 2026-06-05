@@ -1,0 +1,5 @@
+node_modules/
+coverage/
+lib/
+*.log
+# NOTE: dist/ is intentionally committed — GitHub runs the bundled action from it.
