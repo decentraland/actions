@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # npm dependencies of the cdn-deploy action (incl. the committed bundle's deps).
+  - package-ecosystem: npm
+    directory: /cdn-deploy
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # `chore:` so PR titles pass this repo's validate-pr-title check.
+    commit-message:
+      prefix: chore
+
+  # Actions pinned in repo workflows (.github/workflows/*.yml).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+
+  # Actions pinned by the cdn-deploy composite action (action.yml).
+  - package-ecosystem: github-actions
+    directory: /cdn-deploy
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
