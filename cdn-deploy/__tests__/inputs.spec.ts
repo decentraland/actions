@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
+  folderHasIndexHtml,
   isEnvironment,
   kvKeyForTarget,
   parsePercentage,
@@ -215,6 +216,38 @@ describe("when reading the package.json from a folder", () => {
 
     it("should return an empty object", () => {
       expect(readPackageJson(dir)).toEqual({});
+    });
+  });
+});
+
+describe("when checking a folder for index.html", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "cdn-idx-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  describe("and the folder has an index.html at its root", () => {
+    beforeEach(() => {
+      fs.writeFileSync(path.join(dir, "index.html"), "<!doctype html>");
+    });
+
+    it("should return true", () => {
+      expect(folderHasIndexHtml(dir)).toBe(true);
+    });
+  });
+
+  describe("and the folder has no index.html", () => {
+    beforeEach(() => {
+      fs.writeFileSync(path.join(dir, "main.js"), "console.log(1)");
+    });
+
+    it("should return false", () => {
+      expect(folderHasIndexHtml(dir)).toBe(false);
     });
   });
 });

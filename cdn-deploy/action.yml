@@ -31,6 +31,10 @@ inputs:
     description: "Rollout percentage (0-100) for the deployed version."
     required: false
     default: "100"
+  require-index:
+    description: "Fail a deploy when the folder has no index.html at its root (guards against an empty/broken build). Set to 'false' to deploy non-HTML asset bundles."
+    required: false
+    default: "true"
   version:
     description: "Target version. Defaults to a computed deterministic snapshot for a deploy. Provide it to deploy/redeploy under a specific version (e.g. a release tag), or alone (no `folder`/`source-version`) to repoint the KV at an already-uploaded version. Required when no `folder` is provided."
     required: false
@@ -115,6 +119,7 @@ runs:
         INPUT_DEPLOYMENT-ENVIRONMENT: ${{ inputs.deployment-environment }}
         INPUT_DEPLOYMENT-NAME: ${{ inputs.deployment-name }}
         INPUT_PERCENTAGE: ${{ inputs.percentage }}
+        INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_AWS-REGION: ${{ inputs.aws-region }}
         INPUT_S3-BUCKET: ${{ inputs.s3-bucket }}

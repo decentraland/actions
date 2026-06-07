@@ -49,6 +49,8 @@ export type ActionInputs = {
   version?: string;
   /** Source version to copy from (triggers redeploy mode). */
   sourceVersion?: string;
+  /** Fail a deploy if the folder has no index.html at its root (default true). */
+  requireIndex: boolean;
   awsRegion: string;
   s3Bucket: string;
   cloudflareAccountId: string;

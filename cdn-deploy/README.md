@@ -57,6 +57,7 @@ The CF Worker serves assets from `https://cdn.decentraland.org/<prefix>/<version
 | `deployment-environment` | ✅ | — | `zone` (dev) \| `today` (stg) \| `org` (prod). Selects the namespace. |
 | `deployment-name` | | `_site` | Rollout name (key into `records`). |
 | `percentage` | | `100` | Rollout percentage (0–100). |
+| `require-index` | | `true` | Fail a deploy if the folder has no `index.html` at its root (guards against an empty/broken build). Set `false` for non-HTML asset bundles. |
 | `version` | | computed | Target version. Defaults to a computed snapshot on deploy; set it to deploy/redeploy under a specific version (e.g. a release tag), or alone to **repoint** the KV at an already-uploaded version. Required when no `folder`. |
 | `aws-region` | | `us-east-1` | STS / S3 region. |
 | `aws-role-to-assume` | deploy/redeploy | — | IAM role ARN assumed via OIDC. Unused for a pure repoint. |
@@ -175,7 +176,8 @@ A pure **repoint** (rollback or re-point with no copy) is the same call without 
 - **Redeploy copies the whole prefix.** `@dcl/cdn-uploader` writes each file as separate objects (`file`, `file.gzip`, `file.br`) with `public-read` ACL; redeploy copies every object under the source prefix with `MetadataDirective: COPY` + `ACL: public-read`, reproducing exactly what a fresh upload serves. If `source-version` equals the target `version`, the copy is skipped (idempotent).
 - **`aws-sdk` v2.** `@dcl/cdn-uploader` takes a v2 `S3` client; it's constructed with **no** explicit credentials so the OIDC session-token env vars set by `configure-aws-credentials` are used. (v2 is in maintenance — a v3-backed shim is a future cleanup.)
 - **Rollback.** Re-run with an explicit `version:` (an already-uploaded one) to re-point the rollout without re-uploading.
-- **Pin your refs.** Third-party actions here are pinned to commit SHAs (with a version comment). The examples reference `decentraland/actions/cdn-deploy@main` for readability — pin it to a release tag or commit SHA in your own workflows.
+- **Pin your refs.** Third-party actions here are pinned to commit SHAs (with a version comment). For your own workflows, pin the composite to a release tag: `decentraland/actions/cdn-deploy@cdn-deploy-v1` (the floating major tag the release workflow moves on each `cdn-deploy-v*.*.*` tag). The examples use `@main` for readability.
+- **Less boilerplate.** Instead of copying the whole job, call the reusable workflow `decentraland/actions/.github/workflows/cdn-deploy.yml@main` — it does checkout + Node 24 + build + deploy from a handful of `with:` inputs (set an empty `build-command` for redeploy/repoint).
 
 ## Development
 
