@@ -41,7 +41,7 @@ The CF Worker serves assets from `https://cdn.decentraland.org/<prefix>/<version
 
 | Concern | Auth |
 |---|---|
-| **AWS S3** | GitHub **OIDC** assume-role via `aws-actions/configure-aws-credentials@v4` — no static keys |
+| **AWS S3** | GitHub **OIDC** assume-role via `aws-actions/configure-aws-credentials` (SHA-pinned) — no static keys |
 | **GitHub** deployment/commit status | built-in ephemeral `GITHUB_TOKEN` |
 | **Cloudflare KV** | scoped **API token** — Cloudflare has no GitHub-OIDC federation, so this is the single remaining secret |
 
@@ -99,9 +99,9 @@ jobs:
       contents: read        # checkout
       statuses: write       # commit status (cdn-rollout/upload)
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with: { node-version: 24 }
       - run: npm ci && npm run build
       - uses: decentraland/actions/cdn-deploy@main
         with:
@@ -148,6 +148,8 @@ jobs:
       contents: read
       statuses: write
     steps:
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with: { node-version: 24 }   # run the action under Node 24 (no checkout/build needed)
       - uses: decentraland/actions/cdn-deploy@main
         with:
           package-name: "@dcl/auth-site"          # no folder, so name is explicit
@@ -173,6 +175,7 @@ A pure **repoint** (rollback or re-point with no copy) is the same call without 
 - **Redeploy copies the whole prefix.** `@dcl/cdn-uploader` writes each file as separate objects (`file`, `file.gzip`, `file.br`) with `public-read` ACL; redeploy copies every object under the source prefix with `MetadataDirective: COPY` + `ACL: public-read`, reproducing exactly what a fresh upload serves. If `source-version` equals the target `version`, the copy is skipped (idempotent).
 - **`aws-sdk` v2.** `@dcl/cdn-uploader` takes a v2 `S3` client; it's constructed with **no** explicit credentials so the OIDC session-token env vars set by `configure-aws-credentials` are used. (v2 is in maintenance — a v3-backed shim is a future cleanup.)
 - **Rollback.** Re-run with an explicit `version:` (an already-uploaded one) to re-point the rollout without re-uploading.
+- **Pin your refs.** Third-party actions here are pinned to commit SHAs (with a version comment). The examples reference `decentraland/actions/cdn-deploy@main` for readability — pin it to a release tag or commit SHA in your own workflows.
 
 ## Development
 
