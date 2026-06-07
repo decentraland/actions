@@ -96,7 +96,7 @@ runs:
     # repoint (version only) writes just the KV pointer and needs no AWS creds.
     - name: Configure AWS credentials (OIDC)
       if: ${{ inputs.folder != '' || inputs.source-version != '' }}
-      uses: aws-actions/configure-aws-credentials@v4
+      uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
       with:
         role-to-assume: ${{ inputs.aws-role-to-assume }}
         aws-region: ${{ inputs.aws-region }}
