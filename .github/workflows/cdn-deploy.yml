@@ -1,0 +1,181 @@
+# Reusable wrapper around the cdn-deploy composite action: checkout + Node 24 +
+# build + deploy in one call, so a site's deploy workflow is a few lines.
+#
+#   jobs:
+#     deploy:
+#       permissions: { id-token: write, contents: read, deployments: write, statuses: write }
+#       uses: decentraland/actions/.github/workflows/cdn-deploy.yml@main
+#       with:
+#         package-name: '@dcl/sites'
+#         deployment-path: sites
+#         deployment-environment: zone
+#         aws-role-to-assume: ${{ vars.CDN_DEPLOY_ROLE_ARN }}
+#         cloudflare-account-id: ${{ vars.CF_ACCOUNT_ID }}
+#         cloudflare-namespace-zone: ${{ vars.CF_NS_ZONE }}
+#       secrets:
+#         cloudflare-api-token: ${{ secrets.CF_KV_API_TOKEN }}
+#         slack-webhook: ${{ secrets.ROLLOUTS_SLACK_WEBHOOK }}
+#
+# For a redeploy (promote) or repoint, set source-version / version and an empty
+# build-command. For strict pinning, call the composite directly at a release
+# tag (decentraland/actions/cdn-deploy@cdn-deploy-v1) — this reusable workflow
+# tracks the action on `main`.
+
+name: cdn-deploy
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        type: string
+        required: false
+        default: ""
+      deployment-path:
+        type: string
+        required: false
+        default: ""
+      domain:
+        type: string
+        required: false
+        default: ""
+      deployment-environment:
+        type: string
+        required: true
+      deployment-name:
+        type: string
+        required: false
+        default: "_site"
+      percentage:
+        type: number
+        required: false
+        default: 100
+      version:
+        type: string
+        required: false
+        default: ""
+      source-version:
+        type: string
+        required: false
+        default: ""
+      require-index:
+        type: boolean
+        required: false
+        default: true
+      folder:
+        type: string
+        required: false
+        default: "./dist"
+      build-command:
+        description: "Shell command that produces `folder`. Empty for redeploy/repoint (no build)."
+        type: string
+        required: false
+        default: "npm ci && npm run build"
+      node-version:
+        type: string
+        required: false
+        default: "24.x"
+      aws-region:
+        type: string
+        required: false
+        default: "us-east-1"
+      aws-role-to-assume:
+        type: string
+        required: false
+        default: ""
+      s3-bucket:
+        type: string
+        required: false
+        default: "cdn-decentraland-org-contentbucket-371d0b7"
+      cloudflare-account-id:
+        type: string
+        required: true
+      cloudflare-namespace-id:
+        type: string
+        required: false
+        default: ""
+      cloudflare-namespace-zone:
+        type: string
+        required: false
+        default: ""
+      cloudflare-namespace-today:
+        type: string
+        required: false
+        default: ""
+      cloudflare-namespace-org:
+        type: string
+        required: false
+        default: ""
+      cdn-base-url:
+        type: string
+        required: false
+        default: "https://cdn.decentraland.org"
+      create-github-deployment:
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      cloudflare-api-token:
+        required: true
+      slack-webhook:
+        required: false
+    outputs:
+      version:
+        description: "The deployed version."
+        value: ${{ jobs.deploy.outputs.version }}
+      cdn-url:
+        description: "Where the worker serves the version from."
+        value: ${{ jobs.deploy.outputs.cdn-url }}
+      mode:
+        description: "deploy | redeploy | repoint."
+        value: ${{ jobs.deploy.outputs.mode }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      deployments: write
+      statuses: write
+    outputs:
+      version: ${{ steps.deploy.outputs.version }}
+      cdn-url: ${{ steps.deploy.outputs.cdn-url }}
+      mode: ${{ steps.deploy.outputs.mode }}
+    steps:
+      # Build only when there's a build-command (deploy mode); redeploy/repoint skip it.
+      - if: ${{ inputs.build-command != '' }}
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      # setup-node always: it puts Node 24 on PATH so the composite's `node` runs on 24.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - if: ${{ inputs.build-command != '' }}
+        run: ${{ inputs.build-command }}
+        env:
+          HUSKY: 0
+      - id: deploy
+        uses: decentraland/actions/cdn-deploy@main
+        with:
+          folder: ${{ inputs.build-command != '' && inputs.folder || '' }}
+          source-version: ${{ inputs.source-version }}
+          version: ${{ inputs.version }}
+          package-name: ${{ inputs.package-name }}
+          deployment-path: ${{ inputs.deployment-path }}
+          domain: ${{ inputs.domain }}
+          deployment-environment: ${{ inputs.deployment-environment }}
+          deployment-name: ${{ inputs.deployment-name }}
+          percentage: ${{ inputs.percentage }}
+          require-index: ${{ inputs.require-index }}
+          aws-region: ${{ inputs.aws-region }}
+          aws-role-to-assume: ${{ inputs.aws-role-to-assume }}
+          s3-bucket: ${{ inputs.s3-bucket }}
+          cloudflare-account-id: ${{ inputs.cloudflare-account-id }}
+          cloudflare-api-token: ${{ secrets.cloudflare-api-token }}
+          cloudflare-namespace-id: ${{ inputs.cloudflare-namespace-id }}
+          cloudflare-namespace-zone: ${{ inputs.cloudflare-namespace-zone }}
+          cloudflare-namespace-today: ${{ inputs.cloudflare-namespace-today }}
+          cloudflare-namespace-org: ${{ inputs.cloudflare-namespace-org }}
+          cdn-base-url: ${{ inputs.cdn-base-url }}
+          create-github-deployment: ${{ inputs.create-github-deployment }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
