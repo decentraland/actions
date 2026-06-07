@@ -81631,6 +81631,12 @@ async function run() {
     try {
         // 1) Put the assets in place at <packageName>/<version>/ for this mode.
         if (plan.mode === "deploy") {
+            // Fail fast on an empty / misconfigured build rather than publishing a
+            // broken site and pointing the CDN at it.
+            if (inputs.requireIndex && !(0, inputs_1.folderHasIndexHtml)(inputs.folder)) {
+                throw new Error(`No index.html found at the root of "${inputs.folder}". The build looks empty or ` +
+                    "misconfigured. Set `require-index: false` to deploy anyway.");
+            }
             await core.group(`Uploading ${inputs.folder} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
                 const uploaded = await (0, s3_1.uploadFolderToS3)({
                     region: inputs.awsRegion,
@@ -81707,11 +81713,47 @@ async function run() {
             }
         }
         await observability.succeed();
+        await writeSummary({
+            mode: plan.mode,
+            packageName,
+            version,
+            sourceVersion: plan.sourceVersion,
+            environment: inputs.target.environment,
+            percentage: inputs.percentage,
+            cdnUrl,
+        });
         core.info(`✅ Deployed ${packageName}@${version} to ${inputs.target.environment}`);
     }
     catch (e) {
         await observability.fail();
         throw e;
+    }
+}
+/** Best-effort GitHub job summary table (no-op outside Actions / on failure). */
+async function writeSummary(s) {
+    try {
+        const rows = [
+            ["Mode", s.mode],
+            ["Package", s.packageName],
+            ["Version", s.version],
+            ...(s.sourceVersion ? [["Source version", s.sourceVersion]] : []),
+            ["Environment", s.environment],
+            ["Rollout", `${s.percentage}%`],
+            ["CDN URL", s.cdnUrl],
+        ];
+        await core.summary
+            .addHeading("CDN deploy", 3)
+            .addTable([
+            [
+                { data: "Field", header: true },
+                { data: "Value", header: true },
+            ],
+            ...rows,
+        ])
+            .write();
+    }
+    catch (e) {
+        core.warning(`Could not write job summary: ${e instanceof Error ? e.message : String(e)}`);
     }
 }
 run().catch((e) => {
@@ -81767,6 +81809,7 @@ exports.resolveNamespace = resolveNamespace;
 exports.parsePercentage = parsePercentage;
 exports.kvKeyForTarget = kvKeyForTarget;
 exports.rolloutUrlForTarget = rolloutUrlForTarget;
+exports.folderHasIndexHtml = folderHasIndexHtml;
 exports.readPackageJson = readPackageJson;
 exports.readInputs = readInputs;
 const fs = __importStar(__nccwpck_require__(79896));
@@ -81819,6 +81862,10 @@ function rolloutUrlForTarget(target) {
         ? `https://${target.domain}`
         : `https://decentraland.${target.environment}/${target.path}`;
 }
+/** True when the folder has an `index.html` at its root. */
+function folderHasIndexHtml(folder) {
+    return fs.existsSync(path.join(folder, "index.html"));
+}
 function readPackageJson(folder) {
     const file = path.join(folder, "package.json");
     if (!fs.existsSync(file))
@@ -81856,6 +81903,7 @@ function readInputs() {
         percentage: parsePercentage(core.getInput("percentage")),
         version: core.getInput("version") || undefined,
         sourceVersion: core.getInput("source-version") || undefined,
+        requireIndex: core.getInput("require-index") !== "false",
         awsRegion: core.getInput("aws-region") || "us-east-1",
         s3Bucket: core.getInput("s3-bucket") || exports.DEFAULT_BUCKET,
         cloudflareAccountId: core.getInput("cloudflare-account-id", { required: true }),

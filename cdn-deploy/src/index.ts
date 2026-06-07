@@ -1,6 +1,12 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { kvKeyForTarget, readInputs, readPackageJson, rolloutUrlForTarget } from "./inputs";
+import {
+  folderHasIndexHtml,
+  kvKeyForTarget,
+  readInputs,
+  readPackageJson,
+  rolloutUrlForTarget,
+} from "./inputs";
 import { resolvePlan } from "./plan";
 import { copyFolderInS3, uploadFolderToS3 } from "./s3";
 import { createCloudflareKV, patchRolloutInKV, rolloutHasVersion } from "./cloudflare";
@@ -56,6 +62,14 @@ async function run(): Promise<void> {
   try {
     // 1) Put the assets in place at <packageName>/<version>/ for this mode.
     if (plan.mode === "deploy") {
+      // Fail fast on an empty / misconfigured build rather than publishing a
+      // broken site and pointing the CDN at it.
+      if (inputs.requireIndex && !folderHasIndexHtml(inputs.folder)) {
+        throw new Error(
+          `No index.html found at the root of "${inputs.folder}". The build looks empty or ` +
+            "misconfigured. Set `require-index: false` to deploy anyway."
+        );
+      }
       await core.group(`Uploading ${inputs.folder} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
         const uploaded = await uploadFolderToS3({
           region: inputs.awsRegion,
@@ -134,10 +148,54 @@ async function run(): Promise<void> {
     }
 
     await observability.succeed();
+    await writeSummary({
+      mode: plan.mode,
+      packageName,
+      version,
+      sourceVersion: plan.sourceVersion,
+      environment: inputs.target.environment,
+      percentage: inputs.percentage,
+      cdnUrl,
+    });
     core.info(`✅ Deployed ${packageName}@${version} to ${inputs.target.environment}`);
   } catch (e) {
     await observability.fail();
     throw e;
+  }
+}
+
+/** Best-effort GitHub job summary table (no-op outside Actions / on failure). */
+async function writeSummary(s: {
+  mode: string;
+  packageName: string;
+  version: string;
+  sourceVersion?: string;
+  environment: string;
+  percentage: number;
+  cdnUrl: string;
+}): Promise<void> {
+  try {
+    const rows: string[][] = [
+      ["Mode", s.mode],
+      ["Package", s.packageName],
+      ["Version", s.version],
+      ...(s.sourceVersion ? [["Source version", s.sourceVersion]] : []),
+      ["Environment", s.environment],
+      ["Rollout", `${s.percentage}%`],
+      ["CDN URL", s.cdnUrl],
+    ];
+    await core.summary
+      .addHeading("CDN deploy", 3)
+      .addTable([
+        [
+          { data: "Field", header: true },
+          { data: "Value", header: true },
+        ],
+        ...rows,
+      ])
+      .write();
+  } catch (e) {
+    core.warning(`Could not write job summary: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

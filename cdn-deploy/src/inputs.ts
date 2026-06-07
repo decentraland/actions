@@ -69,6 +69,11 @@ export function rolloutUrlForTarget(target: DeploymentTarget): string {
     : `https://decentraland.${target.environment}/${target.path}`;
 }
 
+/** True when the folder has an `index.html` at its root. */
+export function folderHasIndexHtml(folder: string): boolean {
+  return fs.existsSync(path.join(folder, "index.html"));
+}
+
 export function readPackageJson(folder: string): { name?: string; version?: string } {
   const file = path.join(folder, "package.json");
   if (!fs.existsSync(file)) return {};
@@ -112,6 +117,7 @@ export function readInputs(): ActionInputs {
     percentage: parsePercentage(core.getInput("percentage")),
     version: core.getInput("version") || undefined,
     sourceVersion: core.getInput("source-version") || undefined,
+    requireIndex: core.getInput("require-index") !== "false",
     awsRegion: core.getInput("aws-region") || "us-east-1",
     s3Bucket: core.getInput("s3-bucket") || DEFAULT_BUCKET,
     cloudflareAccountId: core.getInput("cloudflare-account-id", { required: true }),

@@ -4,6 +4,9 @@
   "private": true,
   "description": "Build-folder -> S3 -> Cloudflare KV rollout in a single GitHub Action (OIDC for AWS).",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt",
     "test": "jest",
