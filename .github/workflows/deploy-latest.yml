@@ -25,8 +25,10 @@ jobs:
       # digest GC'd out from under a running task (CannotPullContainerError). Block it on prd.
       - name: Block mutable tags on prd
         if: ${{ inputs.deployment-environment == 'prd' }}
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          case "${{ inputs.tag }}" in
+          case "$TAG" in
             latest|next)
               echo "::error::Refusing to deploy a mutable tag (latest/next) to prd. Pin an immutable version tag."
               exit 1 ;;
