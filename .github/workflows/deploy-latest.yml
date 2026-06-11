@@ -21,11 +21,21 @@ jobs:
     name: "Deploy to: ${{ inputs.deployment-environment }}"
     runs-on: ubuntu-latest
     steps:
+      # prd must run an immutable reference. A mutable tag (latest/next) can be repointed, or its
+      # digest GC'd out from under a running task (CannotPullContainerError). Block it on prd.
+      - name: Block mutable tags on prd
+        if: ${{ inputs.deployment-environment == 'prd' }}
+        run: |
+          case "${{ inputs.tag }}" in
+            latest|next)
+              echo "::error::Refusing to deploy a mutable tag (latest/next) to prd. Pin an immutable version tag."
+              exit 1 ;;
+          esac
       - name: Trigger deployment
         id: deploy
         uses: decentraland/dcl-deploy-action@main
         with:
-          dockerImage: "quay.io/decentraland/${{ inputs.service-name }}:${{ input.tag }}"
+          dockerImage: "quay.io/decentraland/${{ inputs.service-name }}:${{ inputs.tag }}"
           serviceName: ${{ inputs.service-name }}
           env: ${{ inputs.deployment-environment }}
           token: ${{ secrets.GITHUB_TOKEN }}

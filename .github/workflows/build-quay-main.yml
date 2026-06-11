@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: latest
+      skip-commit-sha-tag:
+        required: false
+        type: boolean
+        default: false
+        description: "Do not tag the image with the commit SHA. Set on release/versioned builds whose trigger is not a release event (e.g. a release-branch push), so the SHA tag stays on the main build's digest."
       build-args:
         required: false
         type: string
@@ -47,7 +52,13 @@ jobs:
         with:
           image: ${{ inputs.service-name }}
           layers: ${{ inputs.layers }}
-          tags: ${{ github.sha }} ${{ inputs.docker-tag }}
+          # On main builds the image owns the commit-SHA tag, which dev/biz deployments pin by
+          # digest. On release/versioned builds, re-tagging the same SHA onto a separately built
+          # digest moves the tag off the main build's digest -> it goes untagged -> Quay GC reaps
+          # it -> tasks pinned to it fail with CannotPullContainerError. So skip the SHA tag on
+          # release events (and when skip-commit-sha-tag is set); publish the docker-tag only,
+          # which release callers set to the immutable version (also the deploy's registry-path).
+          tags: ${{ (github.event_name == 'release' || inputs.skip-commit-sha-tag) && inputs.docker-tag || format('{0} {1}', github.sha, inputs.docker-tag) }}
           dockerfiles: |
             ./Dockerfile
           build-args: |
