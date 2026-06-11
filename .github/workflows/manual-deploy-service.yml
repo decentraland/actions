@@ -1,4 +1,4 @@
-name: Deploy 'latest' tag to environment
+name: Manually deploy a service tag to an environment
 
 on:
   workflow_dispatch:
