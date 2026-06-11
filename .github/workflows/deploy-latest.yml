@@ -28,8 +28,11 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
         run: |
+          # Block latest/next, including a digest-pinned form (latest@sha256:…). A digest pin
+          # guarantees content but not persistence: once latest/next moves off that digest and no
+          # retained tag remains, Quay GC reaps it and prd fails to pull (CannotPullContainerError).
           case "$TAG" in
-            latest|next)
+            latest|next|latest@*|next@*)
               echo "::error::Refusing to deploy a mutable tag (latest/next) to prd. Pin an immutable version tag."
               exit 1 ;;
           esac
