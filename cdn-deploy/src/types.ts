@@ -47,6 +47,8 @@ export type ActionInputs = {
   version?: string;
   /** Explicit version to copy from; otherwise the commit version is used for a release. */
   sourceVersion?: string;
+  /** Commit sha to compute the version from (manual deploy by commit). Defaults to GITHUB_SHA. */
+  commit?: string;
   /** Fail a deploy if the folder has no index.html at its root (default true). */
   requireIndex: boolean;
   /** Redo the S3 upload/copy even when the target bytes are already present. */

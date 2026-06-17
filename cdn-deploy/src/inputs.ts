@@ -118,7 +118,9 @@ export function readInputs(): ActionInputs {
     throw new Error(`folder "${folder}" does not exist`);
   }
 
-  const pkg = folder ? readPackageJson(folder) : {};
+  // Read package.json from the folder (deploy), else the repo root (a manual
+  // commit deploy checks the repo out so the base version is available here).
+  const pkg = readPackageJson(folder || ".");
   const packageName = core.getInput("package-name") || pkg.name;
   if (!packageName) {
     throw new Error(
@@ -162,6 +164,7 @@ export function readInputs(): ActionInputs {
     percentage: parsePercentage(core.getInput("percentage")),
     version: core.getInput("version") || undefined,
     sourceVersion: core.getInput("source-version") || undefined,
+    commit: core.getInput("commit") || undefined,
     requireIndex: core.getInput("require-index") !== "false",
     force: core.getInput("force") === "true",
     awsRegion: core.getInput("aws-region") || "us-east-1",

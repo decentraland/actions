@@ -13,9 +13,10 @@ async function run(): Promise<void> {
   const { packageName } = inputs;
 
   // commitVersion is reproducible from the commit (no run id), so a release run
-  // can locate the dev-deployed bytes. targetVersion is an explicit version
-  // (e.g. a release tag) or, by default, the commit version.
-  const commitVersion = computeVersion({ baseVersion: inputs.baseVersion, sha: github.context.sha });
+  // can locate the dev-deployed bytes. `commit` lets a manual deploy target a
+  // specific commit's build; otherwise it's the workflow's commit.
+  const sha = inputs.commit || github.context.sha;
+  const commitVersion = computeVersion({ baseVersion: inputs.baseVersion, sha });
   const targetVersion = inputs.version || commitVersion;
 
   const remoteFolder = `${packageName}/${targetVersion}`;
@@ -48,7 +49,11 @@ async function run(): Promise<void> {
     // 1) Ensure the target bytes are in S3 (state-aware). Skipped entirely for a
     //    pure repoint (target named by the commit, no folder/source/force).
     const needsS3 =
-      !!inputs.folder || !!inputs.sourceVersion || inputs.force || targetVersion !== commitVersion;
+      !!inputs.folder ||
+      !!inputs.sourceVersion ||
+      !!inputs.commit ||
+      inputs.force ||
+      targetVersion !== commitVersion;
 
     if (needsS3) {
       if (inputs.folder && inputs.requireIndex && !folderHasIndexHtml(inputs.folder)) {
