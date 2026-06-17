@@ -81611,9 +81611,10 @@ async function run() {
     const inputs = (0, inputs_1.readInputs)();
     const { packageName } = inputs;
     // commitVersion is reproducible from the commit (no run id), so a release run
-    // can locate the dev-deployed bytes. targetVersion is an explicit version
-    // (e.g. a release tag) or, by default, the commit version.
-    const commitVersion = (0, version_1.computeVersion)({ baseVersion: inputs.baseVersion, sha: github.context.sha });
+    // can locate the dev-deployed bytes. `commit` lets a manual deploy target a
+    // specific commit's build; otherwise it's the workflow's commit.
+    const sha = inputs.commit || github.context.sha;
+    const commitVersion = (0, version_1.computeVersion)({ baseVersion: inputs.baseVersion, sha });
     const targetVersion = inputs.version || commitVersion;
     const remoteFolder = `${packageName}/${targetVersion}`;
     const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${targetVersion}`;
@@ -81640,7 +81641,11 @@ async function run() {
     try {
         // 1) Ensure the target bytes are in S3 (state-aware). Skipped entirely for a
         //    pure repoint (target named by the commit, no folder/source/force).
-        const needsS3 = !!inputs.folder || !!inputs.sourceVersion || inputs.force || targetVersion !== commitVersion;
+        const needsS3 = !!inputs.folder ||
+            !!inputs.sourceVersion ||
+            !!inputs.commit ||
+            inputs.force ||
+            targetVersion !== commitVersion;
         if (needsS3) {
             if (inputs.folder && inputs.requireIndex && !(0, inputs_1.folderHasIndexHtml)(inputs.folder)) {
                 throw new Error(`No index.html found at the root of "${inputs.folder}". The build looks empty or ` +
@@ -81922,7 +81927,9 @@ function readInputs() {
     if (folder && !fs.existsSync(folder)) {
         throw new Error(`folder "${folder}" does not exist`);
     }
-    const pkg = folder ? readPackageJson(folder) : {};
+    // Read package.json from the folder (deploy), else the repo root (a manual
+    // commit deploy checks the repo out so the base version is available here).
+    const pkg = readPackageJson(folder || ".");
     const packageName = core.getInput("package-name") || pkg.name;
     if (!packageName) {
         throw new Error("Unable to resolve package name. Set the `package-name` input or add a " +
@@ -81959,6 +81966,7 @@ function readInputs() {
         percentage: parsePercentage(core.getInput("percentage")),
         version: core.getInput("version") || undefined,
         sourceVersion: core.getInput("source-version") || undefined,
+        commit: core.getInput("commit") || undefined,
         requireIndex: core.getInput("require-index") !== "false",
         force: core.getInput("force") === "true",
         awsRegion: core.getInput("aws-region") || "us-east-1",

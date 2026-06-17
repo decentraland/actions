@@ -74,6 +74,7 @@ jobs:
 | `deployment-environment` | | — | Single-env shorthand. |
 | `version` | | commit version | Target version (e.g. a release tag). Alone (no folder/source) → repoint. |
 | `source-version` | | commit version (for a release) | Explicit version to copy from. |
+| `commit` | | workflow commit | Commit sha to compute the version from (manual deploy by commit). Needs the repo checked out at it. |
 | `force` | | `false` | Re-upload/copy even when the target is already in S3. |
 | `percentage` | | `100` | Rollout percentage (0–100). |
 | `deployment-name` | | `_site` | Rollout name (key into `records`). |
@@ -102,7 +103,7 @@ jobs:
 
 - **push → master**: build once, deploy `["zone","today"]`. The first env uploads; pointing both just writes two KV namespaces.
 - **release published**: stage the build under the release tag — `version: ${{ github.event.release.tag_name }}`, `deployment-environments: '[]'`, no build. The action copies the commit's already-uploaded build to the tag dir; **no KV change**.
-- **workflow_dispatch (manual switch)**: `version: <tag>`, `deployment-environments: '["org"]'`. Bytes are already staged → it just repoints prod (a pure repoint needs no AWS).
+- **workflow_dispatch (manual deploy)**: pick an `environment` and the build to deploy by `version` **or** `commit` — e.g. promote what's on dev to stg. With `commit`, the workflow checks the repo out at that commit to read the base version; the build is already on the CDN, so it just repoints that environment's KV.
 
 See `decentraland/sites` for a complete inert example wiring all three.
 
