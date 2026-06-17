@@ -1,25 +1,25 @@
 # Reusable wrapper around the cdn-deploy composite action: checkout + Node 24 +
-# build + deploy in one call, so a site's deploy workflow is a few lines.
+# build + deploy in one call, so a site's deploy job is a few lines.
 #
 #   jobs:
 #     deploy:
 #       permissions: { id-token: write, contents: read, deployments: write, statuses: write }
 #       uses: decentraland/actions/.github/workflows/cdn-deploy.yml@main
 #       with:
-#         package-name: '@dcl/sites'
-#         deployment-path: sites
-#         deployment-environment: zone
-#         aws-role-to-assume: ${{ vars.CDN_DEPLOY_ROLE_ARN }}
-#         cloudflare-account-id: ${{ vars.CF_ACCOUNT_ID }}
-#         cloudflare-namespace-zone: ${{ vars.CF_NS_ZONE }}
-#       secrets:
-#         cloudflare-api-token: ${{ secrets.CF_KV_API_TOKEN }}
-#         slack-webhook: ${{ secrets.ROLLOUTS_SLACK_WEBHOOK }}
+#         deployment-path: sites              # or omit — derived from package.json name
+#         deployment-environments: '["zone","today"]'
+#       secrets: inherit                       # passes the org CF_KV_API_TOKEN / ROLLOUTS_SLACK_WEBHOOK
 #
-# For a redeploy (promote) or repoint, set source-version / version and an empty
-# build-command. For strict pinning, call the composite directly at a release
-# tag (decentraland/actions/cdn-deploy@cdn-deploy-v1) — this reusable workflow
-# tracks the action on `main`.
+# One-time org setup (admin, not per repo):
+#   - secrets:   CF_KV_API_TOKEN, ROLLOUTS_SLACK_WEBHOOK, CF_NS_ZONE, CF_NS_TODAY, CF_NS_ORG
+#   - variables: CF_ACCOUNT_ID, CDN_DEPLOY_ROLE_ARN
+# The bucket, region and CDN url are defaulted in the action; the KV namespace
+# ids come from org secrets (they live in a private repo — not hardcoded here).
+#
+# For a release stage (copy, no KV) set deployment-environments: '[]'. For a
+# manual KV switch set version + the env to repoint and an empty build-command.
+# For strict pinning, call the composite directly at a release tag
+# (decentraland/actions/cdn-deploy@cdn-deploy-v1); this workflow tracks `main`.
 
 name: cdn-deploy
 
@@ -38,9 +38,16 @@ on:
         type: string
         required: false
         default: ""
-      deployment-environment:
+      deployment-environments:
+        description: "JSON array or comma list of environments to repoint. '[]' = stage (S3 only). Empty = default zone+today."
         type: string
-        required: true
+        required: false
+        default: ""
+      deployment-environment:
+        description: "Single-environment shorthand."
+        type: string
+        required: false
+        default: ""
       deployment-name:
         type: string
         required: false
@@ -57,6 +64,10 @@ on:
         type: string
         required: false
         default: ""
+      force:
+        type: boolean
+        required: false
+        default: false
       require-index:
         type: boolean
         required: false
@@ -66,7 +77,7 @@ on:
         required: false
         default: "./dist"
       build-command:
-        description: "Shell command that produces `folder`. Empty for redeploy/repoint (no build)."
+        description: "Shell command that produces `folder`. Empty for copy/repoint (no build)."
         type: string
         required: false
         default: "npm ci && npm run build"
@@ -79,6 +90,7 @@ on:
         required: false
         default: "us-east-1"
       aws-role-to-assume:
+        description: "Override the org-level CDN_DEPLOY_ROLE_ARN variable."
         type: string
         required: false
         default: ""
@@ -87,8 +99,10 @@ on:
         required: false
         default: "cdn-decentraland-org-contentbucket-371d0b7"
       cloudflare-account-id:
+        description: "Override the org-level CF_ACCOUNT_ID variable."
         type: string
-        required: true
+        required: false
+        default: ""
       cloudflare-namespace-id:
         type: string
         required: false
@@ -113,11 +127,6 @@ on:
         type: boolean
         required: false
         default: true
-    secrets:
-      cloudflare-api-token:
-        required: true
-      slack-webhook:
-        required: false
     outputs:
       version:
         description: "The deployed version."
@@ -126,8 +135,13 @@ on:
         description: "Where the worker serves the version from."
         value: ${{ jobs.deploy.outputs.cdn-url }}
       mode:
-        description: "deploy | redeploy | repoint."
+        description: "What the S3 step did: upload | copy | skip."
         value: ${{ jobs.deploy.outputs.mode }}
+
+# One deploy at a time per repo — the KV update is read-modify-write.
+concurrency:
+  group: cdn-deploy-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -142,7 +156,7 @@ jobs:
       cdn-url: ${{ steps.deploy.outputs.cdn-url }}
       mode: ${{ steps.deploy.outputs.mode }}
     steps:
-      # Build only when there's a build-command (deploy mode); redeploy/repoint skip it.
+      # Build only when there's a build-command (deploy); copy/repoint skip it.
       - if: ${{ inputs.build-command != '' }}
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       # setup-node always: it puts Node 24 on PATH so the composite's `node` runs on 24.
@@ -159,22 +173,28 @@ jobs:
           folder: ${{ inputs.build-command != '' && inputs.folder || '' }}
           source-version: ${{ inputs.source-version }}
           version: ${{ inputs.version }}
+          force: ${{ inputs.force }}
           package-name: ${{ inputs.package-name }}
           deployment-path: ${{ inputs.deployment-path }}
           domain: ${{ inputs.domain }}
+          deployment-environments: ${{ inputs.deployment-environments }}
           deployment-environment: ${{ inputs.deployment-environment }}
           deployment-name: ${{ inputs.deployment-name }}
           percentage: ${{ inputs.percentage }}
           require-index: ${{ inputs.require-index }}
           aws-region: ${{ inputs.aws-region }}
-          aws-role-to-assume: ${{ inputs.aws-role-to-assume }}
+          # Org-level variables are the default; an input overrides them.
+          aws-role-to-assume: ${{ inputs.aws-role-to-assume || vars.CDN_DEPLOY_ROLE_ARN }}
           s3-bucket: ${{ inputs.s3-bucket }}
-          cloudflare-account-id: ${{ inputs.cloudflare-account-id }}
-          cloudflare-api-token: ${{ secrets.cloudflare-api-token }}
+          cloudflare-account-id: ${{ inputs.cloudflare-account-id || vars.CF_ACCOUNT_ID }}
+          # Org-level secrets (via `secrets: inherit`). Missing slack = skipped.
+          # The KV namespace ids are org secrets too — not hardcoded in the action.
+          cloudflare-api-token: ${{ secrets.CF_KV_API_TOKEN }}
+          slack-webhook: ${{ secrets.ROLLOUTS_SLACK_WEBHOOK }}
           cloudflare-namespace-id: ${{ inputs.cloudflare-namespace-id }}
-          cloudflare-namespace-zone: ${{ inputs.cloudflare-namespace-zone }}
-          cloudflare-namespace-today: ${{ inputs.cloudflare-namespace-today }}
-          cloudflare-namespace-org: ${{ inputs.cloudflare-namespace-org }}
+          cloudflare-namespace-zone: ${{ inputs.cloudflare-namespace-zone || secrets.CF_NS_ZONE }}
+          cloudflare-namespace-today: ${{ inputs.cloudflare-namespace-today || secrets.CF_NS_TODAY }}
+          cloudflare-namespace-org: ${{ inputs.cloudflare-namespace-org || secrets.CF_NS_ORG }}
           cdn-base-url: ${{ inputs.cdn-base-url }}
           create-github-deployment: ${{ inputs.create-github-deployment }}
         env:

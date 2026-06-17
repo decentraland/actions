@@ -1,39 +1,54 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as core from "@actions/core";
-import { ActionInputs, DeploymentTarget, Environment, NamespaceMap } from "./types";
+import { ActionInputs, DeploymentTarget, Environment, KvTarget, NamespaceMap } from "./types";
 
 export const ENVIRONMENTS: Environment[] = ["zone", "today", "org"];
 export const DEFAULT_BUCKET = "cdn-decentraland-org-contentbucket-371d0b7";
 export const DEFAULT_CDN_BASE_URL = "https://cdn.decentraland.org";
 export const DEFAULT_ROLLOUT_NAME = "_site";
+export const DEFAULT_ENVIRONMENTS: Environment[] = ["zone", "today"];
 
 export function isEnvironment(value: string): value is Environment {
   return (ENVIRONMENTS as string[]).includes(value);
 }
 
-/** Validate the target: exactly one of path/domain, plus a valid environment. */
-export function resolveTarget(raw: {
-  path?: string;
-  domain?: string;
-  environment: string;
-}): DeploymentTarget {
-  const hasPath = !!raw.path;
-  const hasDomain = !!raw.domain;
-  if (hasPath === hasDomain) {
-    throw new Error("Provide exactly one of `deployment-path` or `domain`");
+function asEnvironment(value: string): Environment {
+  if (!isEnvironment(value)) {
+    throw new Error(`Invalid environment "${value}". Expected one of: ${ENVIRONMENTS.join(", ")}`);
   }
-  if (!isEnvironment(raw.environment)) {
-    throw new Error(
-      `Invalid deployment-environment "${raw.environment}". Expected one of: ${ENVIRONMENTS.join(", ")}`
-    );
-  }
-  return hasDomain
-    ? { kind: "domain", domain: raw.domain as string, environment: raw.environment }
-    : { kind: "path", path: raw.path as string, environment: raw.environment };
+  return value;
 }
 
-/** Pick the namespace id for an environment (explicit override wins). */
+/** `@dcl/auth-site` -> `auth`, `@dcl/sites` -> `sites`. */
+export function deriveDeploymentPath(packageName: string): string {
+  return packageName.replace(/^@[^/]+\//, "").replace(/-site$/, "");
+}
+
+/** The KV key: explicit `domain`, explicit `deployment-path`, or derived from the package name. */
+export function resolveTarget(opts: {
+  path?: string;
+  domain?: string;
+  packageName: string;
+}): DeploymentTarget {
+  if (opts.domain && opts.path) {
+    throw new Error("Provide either `deployment-path` or `domain`, not both");
+  }
+  if (opts.domain) return { kind: "domain", domain: opts.domain };
+  return { kind: "path", path: opts.path || deriveDeploymentPath(opts.packageName) };
+}
+
+/** Parse the environments input — JSON array (`["zone","today"]`) or comma list. Empty string -> []. */
+export function parseEnvironments(raw: string): Environment[] {
+  const trimmed = raw.trim();
+  if (trimmed === "") return [];
+  const list: string[] = trimmed.startsWith("[")
+    ? JSON.parse(trimmed)
+    : trimmed.split(",").map((s) => s.trim()).filter(Boolean);
+  return list.map(asEnvironment);
+}
+
+/** Pick the namespace id for an environment: explicit override > per-env input. */
 export function resolveNamespace(
   environment: Environment,
   map: NamespaceMap,
@@ -42,11 +57,22 @@ export function resolveNamespace(
   const ns = override || map[environment];
   if (!ns) {
     throw new Error(
-      `No Cloudflare namespace id configured for environment "${environment}". ` +
-        `Set cloudflare-namespace-${environment} (or cloudflare-namespace-id).`
+      `No Cloudflare namespace id for environment "${environment}". ` +
+        `Set the org secret CF_NS_${environment.toUpperCase()} (or cloudflare-namespace-${environment}).`
     );
   }
   return ns;
+}
+
+export function resolveKvTargets(
+  environments: Environment[],
+  map: NamespaceMap,
+  override?: string
+): KvTarget[] {
+  return environments.map((environment) => ({
+    environment,
+    namespaceId: resolveNamespace(environment, map, override),
+  }));
 }
 
 export function parsePercentage(raw: string): number {
@@ -63,10 +89,10 @@ export function kvKeyForTarget(target: DeploymentTarget): string {
 }
 
 /** Human-facing URL for the Slack notification, mirroring `changeRollout`. */
-export function rolloutUrlForTarget(target: DeploymentTarget): string {
+export function rolloutUrlForTarget(target: DeploymentTarget, environment: Environment): string {
   return target.kind === "domain"
     ? `https://${target.domain}`
-    : `https://decentraland.${target.environment}/${target.path}`;
+    : `https://decentraland.${environment}/${target.path}`;
 }
 
 /** True when the folder has an `index.html` at its root. */
@@ -86,21 +112,37 @@ export function readPackageJson(folder: string): { name?: string; version?: stri
 
 /** Read and validate all action inputs from the environment via @actions/core. */
 export function readInputs(): ActionInputs {
-  // folder is optional: redeploy (source-version) and repoint (version) modes
-  // don't upload from disk. When provided, it must exist.
+  // folder is optional: copy/repoint flows don't upload from disk. When provided, it must exist.
   const folder = core.getInput("folder");
   if (folder && !fs.existsSync(folder)) {
     throw new Error(`folder "${folder}" does not exist`);
   }
 
+  const pkg = folder ? readPackageJson(folder) : {};
+  const packageName = core.getInput("package-name") || pkg.name;
+  if (!packageName) {
+    throw new Error(
+      "Unable to resolve package name. Set the `package-name` input or add a " +
+        '"name" to the built folder\'s package.json.'
+    );
+  }
+
   const target = resolveTarget({
     path: core.getInput("deployment-path") || undefined,
     domain: core.getInput("domain") || undefined,
-    environment: core.getInput("deployment-environment", { required: true }),
+    packageName,
   });
 
-  const namespaceId = resolveNamespace(
-    target.environment,
+  // environments: explicit plural > singular sugar > default [zone, today].
+  const envPlural = core.getInput("deployment-environments");
+  const envSingular = core.getInput("deployment-environment");
+  let environments: Environment[];
+  if (envPlural !== "") environments = parseEnvironments(envPlural); // may be [] (stage)
+  else if (envSingular !== "") environments = [asEnvironment(envSingular)];
+  else environments = DEFAULT_ENVIRONMENTS;
+
+  const kvTargets = resolveKvTargets(
+    environments,
     {
       zone: core.getInput("cloudflare-namespace-zone") || undefined,
       today: core.getInput("cloudflare-namespace-today") || undefined,
@@ -111,18 +153,21 @@ export function readInputs(): ActionInputs {
 
   return {
     folder,
-    packageName: core.getInput("package-name") || undefined,
+    packageName,
+    baseVersion: pkg.version || "0.0.0",
     target,
+    environments,
+    kvTargets,
     deploymentName: core.getInput("deployment-name") || DEFAULT_ROLLOUT_NAME,
     percentage: parsePercentage(core.getInput("percentage")),
     version: core.getInput("version") || undefined,
     sourceVersion: core.getInput("source-version") || undefined,
     requireIndex: core.getInput("require-index") !== "false",
+    force: core.getInput("force") === "true",
     awsRegion: core.getInput("aws-region") || "us-east-1",
     s3Bucket: core.getInput("s3-bucket") || DEFAULT_BUCKET,
     cloudflareAccountId: core.getInput("cloudflare-account-id", { required: true }),
     cloudflareApiToken: core.getInput("cloudflare-api-token", { required: true }),
-    namespaceId,
     slackWebhook: core.getInput("slack-webhook") || undefined,
     createGithubDeployment: core.getBooleanInput("create-github-deployment"),
     cdnBaseUrl: core.getInput("cdn-base-url") || DEFAULT_CDN_BASE_URL,

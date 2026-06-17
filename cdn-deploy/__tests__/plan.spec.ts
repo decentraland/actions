@@ -1,105 +1,94 @@
-import { resolvePlan } from "../src/plan";
+import { resolveEnsurePlan } from "../src/plan";
 
-describe("when resolving the deploy plan", () => {
-  let base: {
-    packageJson: { name?: string; version?: string };
-    runId: number;
-    sha: string;
-  };
+describe("when resolving the S3 ensure plan", () => {
+  const commitVersion = "1.0.0-commit-abc1234";
 
-  beforeEach(() => {
-    base = {
-      packageJson: { name: "@dcl/auth-site", version: "1.0.0" },
-      runId: 7,
-      sha: "abc1234def",
-    };
-  });
+  describe("and the target bytes are already present", () => {
+    describe("and force is off", () => {
+      it("should skip the S3 work", () => {
+        expect(
+          resolveEnsurePlan({
+            folderPresent: true,
+            targetVersion: commitVersion,
+            commitVersion,
+            targetExists: true,
+            force: false,
+          })
+        ).toEqual({ s3: "skip" });
+      });
+    });
 
-  describe("and a folder is present without an explicit version", () => {
-    it("should plan a deploy with a computed snapshot version", () => {
-      expect(resolvePlan({ ...base, folderPresent: true })).toEqual({
-        mode: "deploy",
-        packageName: "@dcl/auth-site",
-        version: "1.0.0-7.commit-abc1234",
+    describe("and force is on", () => {
+      it("should re-upload when a folder is present", () => {
+        expect(
+          resolveEnsurePlan({
+            folderPresent: true,
+            targetVersion: commitVersion,
+            commitVersion,
+            targetExists: true,
+            force: true,
+          })
+        ).toEqual({ s3: "upload" });
       });
     });
   });
 
-  describe("and a folder is present with an explicit version", () => {
-    it("should plan a deploy under the explicit version", () => {
-      expect(resolvePlan({ ...base, folderPresent: true, explicitVersion: "2.0.0" })).toEqual({
-        mode: "deploy",
-        packageName: "@dcl/auth-site",
-        version: "2.0.0",
+  describe("and the target bytes are absent", () => {
+    describe("and only a folder is available (normal deploy)", () => {
+      it("should upload the folder", () => {
+        expect(
+          resolveEnsurePlan({
+            folderPresent: true,
+            targetVersion: commitVersion,
+            commitVersion,
+            targetExists: false,
+            force: false,
+          })
+        ).toEqual({ s3: "upload" });
       });
     });
-  });
 
-  describe("and a source version is provided with a target version", () => {
-    it("should plan a redeploy copying from source to target", () => {
-      expect(
-        resolvePlan({
-          ...base,
-          folderPresent: false,
-          packageJson: {},
-          packageNameInput: "@dcl/auth-site",
-          sourceVersion: "1.0.0-7.commit-abc1234",
-          explicitVersion: "1.2.3",
-        })
-      ).toEqual({
-        mode: "redeploy",
-        packageName: "@dcl/auth-site",
-        version: "1.2.3",
-        sourceVersion: "1.0.0-7.commit-abc1234",
+    describe("and the target is a different version than the commit (release)", () => {
+      it("should copy from the commit version by default", () => {
+        expect(
+          resolveEnsurePlan({
+            folderPresent: false,
+            targetVersion: "1.2.3",
+            commitVersion,
+            targetExists: false,
+            force: false,
+          })
+        ).toEqual({ s3: "copy", source: commitVersion });
       });
     });
-  });
 
-  describe("and a source version is provided without a target version or folder", () => {
-    it("should throw asking for a target version", () => {
-      expect(() =>
-        resolvePlan({
-          ...base,
-          folderPresent: false,
-          packageJson: {},
-          packageNameInput: "@dcl/auth-site",
-          sourceVersion: "1.0.0-7.commit-abc1234",
-        })
-      ).toThrow("Redeploy requires a target `version`");
-    });
-  });
-
-  describe("and only a version is provided without a folder or source", () => {
-    it("should plan a repoint to that version", () => {
-      expect(
-        resolvePlan({
-          ...base,
-          folderPresent: false,
-          packageJson: {},
-          packageNameInput: "@dcl/auth-site",
-          explicitVersion: "1.2.3",
-        })
-      ).toEqual({
-        mode: "repoint",
-        packageName: "@dcl/auth-site",
-        version: "1.2.3",
+    describe("and an explicit source version is given", () => {
+      it("should copy from that source", () => {
+        expect(
+          resolveEnsurePlan({
+            folderPresent: false,
+            sourceVersion: "0.9.0-commit-old1234",
+            targetVersion: "1.2.3",
+            commitVersion,
+            targetExists: false,
+            force: false,
+          })
+        ).toEqual({ s3: "copy", source: "0.9.0-commit-old1234" });
       });
     });
-  });
 
-  describe("and nothing actionable is provided", () => {
-    it("should throw a nothing-to-do error", () => {
-      expect(() =>
-        resolvePlan({ ...base, folderPresent: false, packageJson: {}, packageNameInput: "@dcl/auth-site" })
-      ).toThrow("Nothing to do");
-    });
-  });
-
-  describe("and the package name cannot be resolved", () => {
-    it("should throw an unable-to-resolve-package-name error", () => {
-      expect(() => resolvePlan({ ...base, folderPresent: true, packageJson: {} })).toThrow(
-        "Unable to resolve package name"
-      );
+    describe("and there is nothing to populate the target with", () => {
+      it("should throw a clear error", () => {
+        expect(() =>
+          resolveEnsurePlan({
+            folderPresent: false,
+            targetVersion: commitVersion,
+            commitVersion,
+            targetExists: false,
+            force: false,
+          })
+        ).toThrow('Target version "1.0.0-commit-abc1234" is not in S3');
+      });
     });
   });
 });
