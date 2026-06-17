@@ -107,6 +107,35 @@ export async function patchRolloutInKV(
 }
 
 /**
+ * Patch the same rollout record into several namespaces (one per environment),
+ * sharing the account + token. Used to point multiple environments at one
+ * version after a single S3 upload. Returns the namespaces written.
+ */
+export async function patchRolloutInNamespaces(
+  account: { accountId: string; apiToken: string; fetch?: FetchLike },
+  namespaceIds: string[],
+  params: {
+    key: string;
+    rolloutName: string;
+    percentage: number;
+    prefix: string;
+    version: string;
+    timestamp: number;
+  }
+): Promise<string[]> {
+  for (const namespaceId of namespaceIds) {
+    const kv = createCloudflareKV({
+      accountId: account.accountId,
+      apiToken: account.apiToken,
+      namespaceId,
+      fetch: account.fetch,
+    });
+    await patchRolloutInKV(kv, params);
+  }
+  return namespaceIds;
+}
+
+/**
  * Best-effort read-after-write check: re-read the key and confirm the version
  * is present in the rollout. Cloudflare KV is eventually consistent, so a
  * `false` here is informational (the authoritative signal is the PUT envelope),

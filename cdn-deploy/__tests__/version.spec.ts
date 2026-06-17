@@ -1,4 +1,4 @@
-import { computeVersion, shortSha, snapshotize } from "../src/version";
+import { computeVersion, shortSha } from "../src/version";
 
 describe("when computing the short sha", () => {
   let sha: string;
@@ -12,28 +12,26 @@ describe("when computing the short sha", () => {
   });
 });
 
-describe("when building a snapshot version", () => {
-  it("should join base, run id and commit in the oddish format", () => {
-    expect(snapshotize("1.2.3", 987654321, "a1b2c3d")).toBe("1.2.3-987654321.commit-a1b2c3d");
-  });
-});
-
 describe("when computing a version", () => {
-  describe("and base version, run id and sha are present", () => {
-    let opts: { baseVersion: string; runId: number; sha: string };
+  describe("and base version and sha are present", () => {
+    let opts: { baseVersion: string; sha: string };
 
     beforeEach(() => {
-      opts = { baseVersion: "1.0.0", runId: 42, sha: "deadbeefcafebabe" };
+      opts = { baseVersion: "1.0.0", sha: "deadbeefcafebabe" };
     });
 
-    it("should produce <base>-<runId>.commit-<shortSha>", () => {
-      expect(computeVersion(opts)).toBe("1.0.0-42.commit-deadbee");
+    it("should produce <base>-commit-<shortSha>", () => {
+      expect(computeVersion(opts)).toBe("1.0.0-commit-deadbee");
+    });
+
+    it("should be deterministic for the same commit (no run id)", () => {
+      expect(computeVersion(opts)).toBe(computeVersion({ ...opts }));
     });
   });
 
   describe("and the base version is missing", () => {
     it("should throw a missing baseVersion error", () => {
-      expect(() => computeVersion({ baseVersion: "", runId: 42, sha: "deadbeef" })).toThrow(
+      expect(() => computeVersion({ baseVersion: "", sha: "deadbeef" })).toThrow(
         "computeVersion: missing baseVersion"
       );
     });
@@ -41,16 +39,8 @@ describe("when computing a version", () => {
 
   describe("and the commit sha is missing", () => {
     it("should throw a missing commit sha error", () => {
-      expect(() => computeVersion({ baseVersion: "1.0.0", runId: 42, sha: "" })).toThrow(
+      expect(() => computeVersion({ baseVersion: "1.0.0", sha: "" })).toThrow(
         "computeVersion: missing commit sha"
-      );
-    });
-  });
-
-  describe("and the run id is missing", () => {
-    it("should throw a missing runId error", () => {
-      expect(() => computeVersion({ baseVersion: "1.0.0", runId: "", sha: "deadbeef" })).toThrow(
-        "computeVersion: missing runId"
       );
     });
   });

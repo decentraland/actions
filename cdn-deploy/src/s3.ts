@@ -34,6 +34,30 @@ function asPrefix(folder: string): string {
 }
 
 /**
+ * Does an S3 object exist? Used as the "is this version already deployed?"
+ * signal (we check `<dir>/index.html`). A 404 / NotFound maps to `false`; other
+ * errors (auth, network) propagate so we don't silently treat them as "absent".
+ */
+export async function objectExists(opts: {
+  region: string;
+  bucket: string;
+  key: string;
+  s3?: AWS.S3;
+}): Promise<boolean> {
+  const s3 = opts.s3 || new AWS.S3({ region: opts.region });
+  try {
+    await s3.headObject({ Bucket: opts.bucket, Key: opts.key }).promise();
+    return true;
+  } catch (e) {
+    const err = e as { statusCode?: number; code?: string };
+    if (err && (err.statusCode === 404 || err.code === "NotFound" || err.code === "NoSuchKey")) {
+      return false;
+    }
+    throw e;
+  }
+}
+
+/**
  * Server-side copy of every object under `sourceFolder/` to `targetFolder/`
  * within the same bucket — the no-rebuild redeploy.
  *

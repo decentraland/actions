@@ -81313,6 +81313,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createCloudflareKV = createCloudflareKV;
 exports.patchRolloutInKV = patchRolloutInKV;
+exports.patchRolloutInNamespaces = patchRolloutInNamespaces;
 exports.rolloutHasVersion = rolloutHasVersion;
 const node_fetch_1 = __importDefault(__nccwpck_require__(26705));
 const rollouts_lib_1 = __nccwpck_require__(563);
@@ -81372,6 +81373,23 @@ async function patchRolloutInKV(kv, params) {
     const newValues = (0, rollouts_lib_1.patchRollouts)(currentValues, params.rolloutName, { percentage: params.percentage | 0, prefix: params.prefix, version: params.version }, params.timestamp);
     await kv.put(params.key, JSON.stringify(newValues));
     return newValues;
+}
+/**
+ * Patch the same rollout record into several namespaces (one per environment),
+ * sharing the account + token. Used to point multiple environments at one
+ * version after a single S3 upload. Returns the namespaces written.
+ */
+async function patchRolloutInNamespaces(account, namespaceIds, params) {
+    for (const namespaceId of namespaceIds) {
+        const kv = createCloudflareKV({
+            accountId: account.accountId,
+            apiToken: account.apiToken,
+            namespaceId,
+            fetch: account.fetch,
+        });
+        await patchRolloutInKV(kv, params);
+    }
+    return namespaceIds;
 }
 /**
  * Best-effort read-after-write check: re-read the key and confirm the version
@@ -81583,6 +81601,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
 const inputs_1 = __nccwpck_require__(38422);
+const version_1 = __nccwpck_require__(311);
 const plan_1 = __nccwpck_require__(22464);
 const s3_1 = __nccwpck_require__(72049);
 const cloudflare_1 = __nccwpck_require__(42316);
@@ -81590,69 +81609,62 @@ const slack_1 = __nccwpck_require__(16691);
 const github_1 = __nccwpck_require__(69248);
 async function run() {
     const inputs = (0, inputs_1.readInputs)();
-    // package name + base version come from the built folder's package.json,
-    // matching how oddish ran with `cwd: ./dist`. The whole runtime contract
-    // hinges on `prefix === packageName`.
-    const pkg = inputs.folder ? (0, inputs_1.readPackageJson)(inputs.folder) : {};
-    const plan = (0, plan_1.resolvePlan)({
-        folderPresent: !!inputs.folder,
-        sourceVersion: inputs.sourceVersion,
-        explicitVersion: inputs.version,
-        packageNameInput: inputs.packageName,
-        packageJson: pkg,
-        runId: github.context.runId,
-        sha: github.context.sha,
-    });
-    const { packageName, version } = plan;
-    const remoteFolder = `${packageName}/${version}`;
-    const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${version}`;
-    core.setOutput("version", version);
+    const { packageName } = inputs;
+    // commitVersion is reproducible from the commit (no run id), so a release run
+    // can locate the dev-deployed bytes. targetVersion is an explicit version
+    // (e.g. a release tag) or, by default, the commit version.
+    const commitVersion = (0, version_1.computeVersion)({ baseVersion: inputs.baseVersion, sha: github.context.sha });
+    const targetVersion = inputs.version || commitVersion;
+    const remoteFolder = `${packageName}/${targetVersion}`;
+    const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${targetVersion}`;
+    const key = (0, inputs_1.kvKeyForTarget)(inputs.target);
+    const envs = inputs.environments;
+    core.setOutput("version", targetVersion);
     core.setOutput("s3-path", remoteFolder);
     core.setOutput("cdn-url", cdnUrl);
-    core.setOutput("mode", plan.mode);
-    const key = (0, inputs_1.kvKeyForTarget)(inputs.target);
-    core.info(`mode:         ${plan.mode}`);
     core.info(`package:      ${packageName}`);
-    core.info(`version:      ${version}`);
-    if (plan.sourceVersion)
-        core.info(`source:       ${plan.sourceVersion}`);
-    core.info(`environment:  ${inputs.target.environment}`);
-    core.info(`kv key:       ${key} (namespace ${inputs.namespaceId})`);
+    core.info(`version:      ${targetVersion}${targetVersion === commitVersion ? " (commit)" : ""}`);
+    core.info(`kv key:       ${key}`);
+    core.info(`environments: ${envs.length ? envs.join(", ") : "(stage only — no KV)"}`);
     core.info(`cdn url:      ${cdnUrl}`);
     const observability = (0, github_1.createObservability)({
         enabled: inputs.createGithubDeployment,
         token: process.env.GITHUB_TOKEN,
-        environment: inputs.target.environment,
+        environment: envs.join("+") || "stage",
         packageName,
-        version,
+        version: targetVersion,
         cdnUrl,
     });
     await observability.start();
+    let s3Action = "skip";
     try {
-        // 1) Put the assets in place at <packageName>/<version>/ for this mode.
-        if (plan.mode === "deploy") {
-            // Fail fast on an empty / misconfigured build rather than publishing a
-            // broken site and pointing the CDN at it.
-            if (inputs.requireIndex && !(0, inputs_1.folderHasIndexHtml)(inputs.folder)) {
+        // 1) Ensure the target bytes are in S3 (state-aware). Skipped entirely for a
+        //    pure repoint (target named by the commit, no folder/source/force).
+        const needsS3 = !!inputs.folder || !!inputs.sourceVersion || inputs.force || targetVersion !== commitVersion;
+        if (needsS3) {
+            if (inputs.folder && inputs.requireIndex && !(0, inputs_1.folderHasIndexHtml)(inputs.folder)) {
                 throw new Error(`No index.html found at the root of "${inputs.folder}". The build looks empty or ` +
                     "misconfigured. Set `require-index: false` to deploy anyway.");
             }
-            await core.group(`Uploading ${inputs.folder} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
-                const uploaded = await (0, s3_1.uploadFolderToS3)({
-                    region: inputs.awsRegion,
-                    bucket: inputs.s3Bucket,
-                    folder: inputs.folder,
-                    remoteFolder,
-                });
-                core.info(`Uploaded ${uploaded.length} files.`);
+            const targetExists = await (0, s3_1.objectExists)({
+                region: inputs.awsRegion,
+                bucket: inputs.s3Bucket,
+                key: `${remoteFolder}/index.html`,
             });
-        }
-        else if (plan.mode === "redeploy") {
-            const sourceFolder = `${packageName}/${plan.sourceVersion}`;
-            if (plan.sourceVersion === version) {
-                core.info(`> Source and target version match (${version}); skipping S3 copy.`);
+            const plan = (0, plan_1.resolveEnsurePlan)({
+                folderPresent: !!inputs.folder,
+                sourceVersion: inputs.sourceVersion,
+                targetVersion,
+                commitVersion,
+                targetExists,
+                force: inputs.force,
+            });
+            s3Action = plan.s3;
+            if (plan.s3 === "skip") {
+                core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
             }
-            else {
+            else if (plan.s3 === "copy") {
+                const sourceFolder = `${packageName}/${plan.source}`;
                 await core.group(`Copying s3://${inputs.s3Bucket}/${sourceFolder} -> ${remoteFolder}`, async () => {
                     const copied = await (0, s3_1.copyFolderInS3)({
                         region: inputs.awsRegion,
@@ -81663,66 +81675,68 @@ async function run() {
                     core.info(`Copied ${copied} objects.`);
                 });
             }
+            else {
+                await core.group(`Uploading ${inputs.folder} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
+                    const uploaded = await (0, s3_1.uploadFolderToS3)({
+                        region: inputs.awsRegion,
+                        bucket: inputs.s3Bucket,
+                        folder: inputs.folder,
+                        remoteFolder,
+                    });
+                    core.info(`Uploaded ${uploaded.length} files.`);
+                });
+            }
         }
         else {
-            core.info("> Repoint mode: no S3 operation, only moving the KV pointer.");
+            core.info("> Repoint only — no S3 operation.");
         }
-        // 2) Patch the Cloudflare KV rollout record (read-modify-write).
-        const kv = (0, cloudflare_1.createCloudflareKV)({
-            accountId: inputs.cloudflareAccountId,
-            apiToken: inputs.cloudflareApiToken,
-            namespaceId: inputs.namespaceId,
-        });
-        await core.group(`Setting rollout "${inputs.deploymentName}" on KV key "${key}"`, async () => {
-            await (0, cloudflare_1.patchRolloutInKV)(kv, {
-                key,
-                rolloutName: inputs.deploymentName,
-                percentage: inputs.percentage,
-                prefix: packageName,
-                version,
-                timestamp: Date.now(),
-            });
-            // Best-effort read-after-write (KV is eventually consistent — informational only).
-            const visible = await (0, cloudflare_1.rolloutHasVersion)(kv, {
-                key,
-                rolloutName: inputs.deploymentName,
-                version,
-            });
-            if (visible) {
-                core.info(`Rollout confirmed: ${version} @ ${inputs.percentage}%`);
-            }
-            else {
-                core.warning("Rollout write reported success but the version is not yet visible on read-back " +
-                    "(Cloudflare KV is eventually consistent). This is usually transient.");
-            }
-        });
-        // 3) Slack notification (non-fatal).
-        if (inputs.slackWebhook) {
-            try {
-                await (0, slack_1.notifyRollout)({
-                    webhookUrl: inputs.slackWebhook,
-                    url: (0, inputs_1.rolloutUrlForTarget)(inputs.target),
+        // 2) KV: repoint each environment, or stage (empty list -> no KV).
+        if (envs.length === 0) {
+            core.info("> Stage only: bytes are in S3, KV left unchanged.");
+        }
+        else {
+            await core.group(`Setting rollout "${inputs.deploymentName}" on "${key}" for ${envs.join(", ")}`, async () => {
+                await (0, cloudflare_1.patchRolloutInNamespaces)({ accountId: inputs.cloudflareAccountId, apiToken: inputs.cloudflareApiToken }, inputs.kvTargets.map((t) => t.namespaceId), {
+                    key,
                     rolloutName: inputs.deploymentName,
                     percentage: inputs.percentage,
                     prefix: packageName,
-                    version,
+                    version: targetVersion,
+                    timestamp: Date.now(),
                 });
-            }
-            catch (e) {
-                core.warning(`Slack notification failed: ${e instanceof Error ? e.message : String(e)}`);
+                core.info(`Repointed ${envs.join(", ")} -> ${targetVersion} @ ${inputs.percentage}%`);
+            });
+            // 3) Slack (non-fatal), one message per repointed environment.
+            if (inputs.slackWebhook) {
+                for (const env of envs) {
+                    try {
+                        await (0, slack_1.notifyRollout)({
+                            webhookUrl: inputs.slackWebhook,
+                            url: (0, inputs_1.rolloutUrlForTarget)(inputs.target, env),
+                            rolloutName: inputs.deploymentName,
+                            percentage: inputs.percentage,
+                            prefix: packageName,
+                            version: targetVersion,
+                        });
+                    }
+                    catch (e) {
+                        core.warning(`Slack notification failed: ${e instanceof Error ? e.message : String(e)}`);
+                    }
+                }
             }
         }
+        core.setOutput("mode", s3Action);
         await observability.succeed();
         await writeSummary({
-            mode: plan.mode,
+            s3Action,
             packageName,
-            version,
-            sourceVersion: plan.sourceVersion,
-            environment: inputs.target.environment,
+            version: targetVersion,
+            environments: envs,
             percentage: inputs.percentage,
             cdnUrl,
         });
-        core.info(`✅ Deployed ${packageName}@${version} to ${inputs.target.environment}`);
+        core.info(`✅ ${s3Action} ${packageName}@${targetVersion}` +
+            (envs.length ? ` -> ${envs.join(", ")}` : " (staged, no KV)"));
     }
     catch (e) {
         await observability.fail();
@@ -81733,11 +81747,10 @@ async function run() {
 async function writeSummary(s) {
     try {
         const rows = [
-            ["Mode", s.mode],
+            ["S3", s.s3Action],
             ["Package", s.packageName],
             ["Version", s.version],
-            ...(s.sourceVersion ? [["Source version", s.sourceVersion]] : []),
-            ["Environment", s.environment],
+            ["Environments", s.environments.length ? s.environments.join(", ") : "(staged — no KV)"],
             ["Rollout", `${s.percentage}%`],
             ["CDN URL", s.cdnUrl],
         ];
@@ -81802,10 +81815,13 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DEFAULT_ROLLOUT_NAME = exports.DEFAULT_CDN_BASE_URL = exports.DEFAULT_BUCKET = exports.ENVIRONMENTS = void 0;
+exports.DEFAULT_ENVIRONMENTS = exports.DEFAULT_ROLLOUT_NAME = exports.DEFAULT_CDN_BASE_URL = exports.DEFAULT_BUCKET = exports.ENVIRONMENTS = void 0;
 exports.isEnvironment = isEnvironment;
+exports.deriveDeploymentPath = deriveDeploymentPath;
 exports.resolveTarget = resolveTarget;
+exports.parseEnvironments = parseEnvironments;
 exports.resolveNamespace = resolveNamespace;
+exports.resolveKvTargets = resolveKvTargets;
 exports.parsePercentage = parsePercentage;
 exports.kvKeyForTarget = kvKeyForTarget;
 exports.rolloutUrlForTarget = rolloutUrlForTarget;
@@ -81819,31 +81835,53 @@ exports.ENVIRONMENTS = ["zone", "today", "org"];
 exports.DEFAULT_BUCKET = "cdn-decentraland-org-contentbucket-371d0b7";
 exports.DEFAULT_CDN_BASE_URL = "https://cdn.decentraland.org";
 exports.DEFAULT_ROLLOUT_NAME = "_site";
+exports.DEFAULT_ENVIRONMENTS = ["zone", "today"];
 function isEnvironment(value) {
     return exports.ENVIRONMENTS.includes(value);
 }
-/** Validate the target: exactly one of path/domain, plus a valid environment. */
-function resolveTarget(raw) {
-    const hasPath = !!raw.path;
-    const hasDomain = !!raw.domain;
-    if (hasPath === hasDomain) {
-        throw new Error("Provide exactly one of `deployment-path` or `domain`");
+function asEnvironment(value) {
+    if (!isEnvironment(value)) {
+        throw new Error(`Invalid environment "${value}". Expected one of: ${exports.ENVIRONMENTS.join(", ")}`);
     }
-    if (!isEnvironment(raw.environment)) {
-        throw new Error(`Invalid deployment-environment "${raw.environment}". Expected one of: ${exports.ENVIRONMENTS.join(", ")}`);
-    }
-    return hasDomain
-        ? { kind: "domain", domain: raw.domain, environment: raw.environment }
-        : { kind: "path", path: raw.path, environment: raw.environment };
+    return value;
 }
-/** Pick the namespace id for an environment (explicit override wins). */
+/** `@dcl/auth-site` -> `auth`, `@dcl/sites` -> `sites`. */
+function deriveDeploymentPath(packageName) {
+    return packageName.replace(/^@[^/]+\//, "").replace(/-site$/, "");
+}
+/** The KV key: explicit `domain`, explicit `deployment-path`, or derived from the package name. */
+function resolveTarget(opts) {
+    if (opts.domain && opts.path) {
+        throw new Error("Provide either `deployment-path` or `domain`, not both");
+    }
+    if (opts.domain)
+        return { kind: "domain", domain: opts.domain };
+    return { kind: "path", path: opts.path || deriveDeploymentPath(opts.packageName) };
+}
+/** Parse the environments input — JSON array (`["zone","today"]`) or comma list. Empty string -> []. */
+function parseEnvironments(raw) {
+    const trimmed = raw.trim();
+    if (trimmed === "")
+        return [];
+    const list = trimmed.startsWith("[")
+        ? JSON.parse(trimmed)
+        : trimmed.split(",").map((s) => s.trim()).filter(Boolean);
+    return list.map(asEnvironment);
+}
+/** Pick the namespace id for an environment: explicit override > per-env input. */
 function resolveNamespace(environment, map, override) {
     const ns = override || map[environment];
     if (!ns) {
-        throw new Error(`No Cloudflare namespace id configured for environment "${environment}". ` +
-            `Set cloudflare-namespace-${environment} (or cloudflare-namespace-id).`);
+        throw new Error(`No Cloudflare namespace id for environment "${environment}". ` +
+            `Set the org secret CF_NS_${environment.toUpperCase()} (or cloudflare-namespace-${environment}).`);
     }
     return ns;
+}
+function resolveKvTargets(environments, map, override) {
+    return environments.map((environment) => ({
+        environment,
+        namespaceId: resolveNamespace(environment, map, override),
+    }));
 }
 function parsePercentage(raw) {
     const pct = raw === "" ? 100 : Number(raw);
@@ -81857,10 +81895,10 @@ function kvKeyForTarget(target) {
     return target.kind === "domain" ? target.domain : target.path;
 }
 /** Human-facing URL for the Slack notification, mirroring `changeRollout`. */
-function rolloutUrlForTarget(target) {
+function rolloutUrlForTarget(target, environment) {
     return target.kind === "domain"
         ? `https://${target.domain}`
-        : `https://decentraland.${target.environment}/${target.path}`;
+        : `https://decentraland.${environment}/${target.path}`;
 }
 /** True when the folder has an `index.html` at its root. */
 function folderHasIndexHtml(folder) {
@@ -81879,36 +81917,54 @@ function readPackageJson(folder) {
 }
 /** Read and validate all action inputs from the environment via @actions/core. */
 function readInputs() {
-    // folder is optional: redeploy (source-version) and repoint (version) modes
-    // don't upload from disk. When provided, it must exist.
+    // folder is optional: copy/repoint flows don't upload from disk. When provided, it must exist.
     const folder = core.getInput("folder");
     if (folder && !fs.existsSync(folder)) {
         throw new Error(`folder "${folder}" does not exist`);
     }
+    const pkg = folder ? readPackageJson(folder) : {};
+    const packageName = core.getInput("package-name") || pkg.name;
+    if (!packageName) {
+        throw new Error("Unable to resolve package name. Set the `package-name` input or add a " +
+            '"name" to the built folder\'s package.json.');
+    }
     const target = resolveTarget({
         path: core.getInput("deployment-path") || undefined,
         domain: core.getInput("domain") || undefined,
-        environment: core.getInput("deployment-environment", { required: true }),
+        packageName,
     });
-    const namespaceId = resolveNamespace(target.environment, {
+    // environments: explicit plural > singular sugar > default [zone, today].
+    const envPlural = core.getInput("deployment-environments");
+    const envSingular = core.getInput("deployment-environment");
+    let environments;
+    if (envPlural !== "")
+        environments = parseEnvironments(envPlural); // may be [] (stage)
+    else if (envSingular !== "")
+        environments = [asEnvironment(envSingular)];
+    else
+        environments = exports.DEFAULT_ENVIRONMENTS;
+    const kvTargets = resolveKvTargets(environments, {
         zone: core.getInput("cloudflare-namespace-zone") || undefined,
         today: core.getInput("cloudflare-namespace-today") || undefined,
         org: core.getInput("cloudflare-namespace-org") || undefined,
     }, core.getInput("cloudflare-namespace-id") || undefined);
     return {
         folder,
-        packageName: core.getInput("package-name") || undefined,
+        packageName,
+        baseVersion: pkg.version || "0.0.0",
         target,
+        environments,
+        kvTargets,
         deploymentName: core.getInput("deployment-name") || exports.DEFAULT_ROLLOUT_NAME,
         percentage: parsePercentage(core.getInput("percentage")),
         version: core.getInput("version") || undefined,
         sourceVersion: core.getInput("source-version") || undefined,
         requireIndex: core.getInput("require-index") !== "false",
+        force: core.getInput("force") === "true",
         awsRegion: core.getInput("aws-region") || "us-east-1",
         s3Bucket: core.getInput("s3-bucket") || exports.DEFAULT_BUCKET,
         cloudflareAccountId: core.getInput("cloudflare-account-id", { required: true }),
         cloudflareApiToken: core.getInput("cloudflare-api-token", { required: true }),
-        namespaceId,
         slackWebhook: core.getInput("slack-webhook") || undefined,
         createGithubDeployment: core.getBooleanInput("create-github-deployment"),
         cdnBaseUrl: core.getInput("cdn-base-url") || exports.DEFAULT_CDN_BASE_URL,
@@ -81919,50 +81975,38 @@ function readInputs() {
 /***/ }),
 
 /***/ 22464:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.resolvePlan = resolvePlan;
-const version_1 = __nccwpck_require__(311);
+exports.resolveEnsurePlan = resolveEnsurePlan;
 /**
- * Decide what the action does from the inputs present. Pure and testable.
+ * Decide what to do with S3 for the target version, from the current S3 state.
+ * Pure and testable. The action always repoints the KV afterwards (or stages,
+ * if no environments are given) — this only covers the S3 side.
  *
- * - `source-version` set        -> redeploy (copy S3 objects, no rebuild)
- * - else `folder` present       -> deploy (upload the built folder)
- * - else `version` set          -> repoint (move the KV pointer only)
- * - else                        -> error
- *
- * The target version is the explicit `version` input when given (e.g. a release
- * tag), otherwise the computed deterministic snapshot. When there is no folder
- * to derive a base version from, an explicit `version` is required.
+ * - target bytes already present and not `force` -> **skip**.
+ * - otherwise populate the target: prefer **copy** from a source (an explicit
+ *   `sourceVersion`, or the commit version when the target is a different
+ *   version — the release case), else **upload** the built `folder`.
+ * - nothing to populate it with -> error.
  */
-function resolvePlan(opts) {
-    const packageName = opts.packageNameInput || opts.packageJson.name;
-    if (!packageName) {
-        throw new Error("Unable to resolve package name. Set the `package-name` input or add a " +
-            '"name" to the built folder\'s package.json.');
+function resolveEnsurePlan(opts) {
+    if (opts.targetExists && !opts.force) {
+        return { s3: "skip" };
     }
-    const computeTarget = () => (0, version_1.computeVersion)({
-        baseVersion: opts.packageJson.version || "0.0.0",
-        runId: opts.runId,
-        sha: opts.sha,
-    });
-    if (opts.sourceVersion) {
-        const version = opts.explicitVersion || (opts.folderPresent ? computeTarget() : undefined);
-        if (!version) {
-            throw new Error("Redeploy requires a target `version` (e.g. the release tag) when no `folder` is provided.");
-        }
-        return { mode: "redeploy", packageName, version, sourceVersion: opts.sourceVersion };
+    const source = opts.sourceVersion ||
+        (opts.targetVersion !== opts.commitVersion ? opts.commitVersion : undefined);
+    if (source && source !== opts.targetVersion) {
+        return { s3: "copy", source };
     }
     if (opts.folderPresent) {
-        return { mode: "deploy", packageName, version: opts.explicitVersion || computeTarget() };
+        return { s3: "upload" };
     }
-    if (opts.explicitVersion) {
-        return { mode: "repoint", packageName, version: opts.explicitVersion };
-    }
-    throw new Error("Nothing to do: provide `folder` (deploy), `source-version` (redeploy), or `version` (repoint).");
+    throw new Error(`Target version "${opts.targetVersion}" is not in S3 and there is nothing to populate it ` +
+        "with: provide a `folder` to upload, or a `source-version` to copy from (or deploy the " +
+        "source commit first).");
 }
 
 
@@ -82008,6 +82052,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.uploadFolderToS3 = uploadFolderToS3;
+exports.objectExists = objectExists;
 exports.copyFolderInS3 = copyFolderInS3;
 const AWS = __importStar(__nccwpck_require__(62605));
 const cdn_uploader_1 = __nccwpck_require__(71189);
@@ -82033,6 +82078,25 @@ async function uploadFolderToS3(opts) {
 /** Strip trailing slashes and append a single one. */
 function asPrefix(folder) {
     return folder.replace(/\/+$/, "") + "/";
+}
+/**
+ * Does an S3 object exist? Used as the "is this version already deployed?"
+ * signal (we check `<dir>/index.html`). A 404 / NotFound maps to `false`; other
+ * errors (auth, network) propagate so we don't silently treat them as "absent".
+ */
+async function objectExists(opts) {
+    const s3 = opts.s3 || new AWS.S3({ region: opts.region });
+    try {
+        await s3.headObject({ Bucket: opts.bucket, Key: opts.key }).promise();
+        return true;
+    }
+    catch (e) {
+        const err = e;
+        if (err && (err.statusCode === 404 || err.code === "NotFound" || err.code === "NoSuchKey")) {
+            return false;
+        }
+        throw e;
+    }
 }
 /**
  * Server-side copy of every object under `sourceFolder/` to `targetFolder/`
@@ -82146,36 +82210,30 @@ async function notifyRollout(opts) {
 "use strict";
 
 /**
- * Deterministic version computation.
+ * Commit-deterministic version.
  *
- * Mirrors `oddish-action`'s `snapshotize` so the version a site produced under
- * the old npm-publish flow is reproduced here without publishing: it is fully
- * derivable, before or after the build, from the base version + the workflow
- * run id + the commit. The run id guarantees uniqueness per run, so the
- * npm-registry conflict resolution oddish did is unnecessary.
+ * Format: `<baseVersion>-commit-<shortSha>`.
  *
- * Format: `<baseVersion>-<runId>.commit-<shortSha>`
+ * The version is derived purely from the base version + the commit, with NO run
+ * id. This is deliberate: a later run (e.g. a release on the same commit) must
+ * be able to *reconstruct* the version a previous run deployed, so it can locate
+ * those bytes in S3 and copy them. It also makes re-runs idempotent (same commit
+ * -> same S3 dir -> the state-aware check skips re-uploading). Safe because we no
+ * longer publish to npm (run-id uniqueness only mattered for npm versions).
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.shortSha = shortSha;
-exports.snapshotize = snapshotize;
 exports.computeVersion = computeVersion;
 /** First 7 chars of a commit sha, matching `git rev-parse --short`. */
 function shortSha(sha) {
     return sha.slice(0, 7);
-}
-function snapshotize(baseVersion, runId, commit) {
-    return `${baseVersion}-${runId}.commit-${commit}`;
 }
 function computeVersion(opts) {
     if (!opts.baseVersion)
         throw new Error("computeVersion: missing baseVersion");
     if (!opts.sha)
         throw new Error("computeVersion: missing commit sha");
-    if (opts.runId === undefined || opts.runId === null || `${opts.runId}`.length === 0) {
-        throw new Error("computeVersion: missing runId");
-    }
-    return snapshotize(opts.baseVersion, opts.runId, shortSha(opts.sha));
+    return `${opts.baseVersion}-commit-${shortSha(opts.sha)}`;
 }
 
 

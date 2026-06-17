@@ -1,7 +1,7 @@
 jest.mock("@dcl/cdn-uploader", () => ({ uploadDir: jest.fn() }));
 
 import { uploadDir } from "@dcl/cdn-uploader";
-import { copyFolderInS3, uploadFolderToS3 } from "../src/s3";
+import { copyFolderInS3, objectExists, uploadFolderToS3 } from "../src/s3";
 
 type PromisableMock = jest.Mock & { calls?: unknown[] };
 
@@ -175,6 +175,58 @@ describe("when copying a folder in S3", () => {
           s3: s3 as never,
         })
       ).rejects.toThrow("No objects found under s3://cdn-bucket/@dcl/auth-site/missing/ to copy.");
+    });
+  });
+});
+
+describe("when checking if an S3 object exists", () => {
+  let headObject: jest.Mock;
+  let s3: { headObject: jest.Mock };
+
+  beforeEach(() => {
+    headObject = jest.fn();
+    s3 = { headObject };
+  });
+
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
+
+  describe("and the object exists", () => {
+    beforeEach(() => {
+      headObject.mockReturnValueOnce({ promise: () => Promise.resolve({}) });
+    });
+
+    it("should return true", async () => {
+      await expect(
+        objectExists({ region: "us-east-1", bucket: "b", key: "x/index.html", s3: s3 as never })
+      ).resolves.toBe(true);
+    });
+  });
+
+  describe("and the object is missing (404)", () => {
+    beforeEach(() => {
+      headObject.mockReturnValueOnce({ promise: () => Promise.reject({ statusCode: 404 }) });
+    });
+
+    it("should return false", async () => {
+      await expect(
+        objectExists({ region: "us-east-1", bucket: "b", key: "x/index.html", s3: s3 as never })
+      ).resolves.toBe(false);
+    });
+  });
+
+  describe("and the head request fails with a non-404 error", () => {
+    beforeEach(() => {
+      headObject.mockReturnValueOnce({
+        promise: () => Promise.reject({ statusCode: 500, message: "boom" }),
+      });
+    });
+
+    it("should propagate the error", async () => {
+      await expect(
+        objectExists({ region: "us-east-1", bucket: "b", key: "x/index.html", s3: s3 as never })
+      ).rejects.toEqual({ statusCode: 500, message: "boom" });
     });
   });
 });

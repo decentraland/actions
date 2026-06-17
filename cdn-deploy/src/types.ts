@@ -2,14 +2,14 @@
 export type Environment = "zone" | "today" | "org";
 
 /**
- * Where the rollout record is written. Mirrors the key derivation in
- * `webhooks-receiver`'s `changeRollout`: the KV key is either a path
- * (path-based sites, e.g. `auth`) or a full domain. In both cases the
- * `environment` selects which Cloudflare KV namespace receives the write.
+ * The KV key the rollout is written under. Mirrors `webhooks-receiver`'s
+ * `changeRollout`: either a path (path-based sites, e.g. `auth`) or a full
+ * domain. The environment(s) select which Cloudflare KV namespace(s) receive
+ * the write.
  */
 export type DeploymentTarget =
-  | { kind: "path"; path: string; environment: Environment }
-  | { kind: "domain"; domain: string; environment: Environment };
+  | { kind: "path"; path: string }
+  | { kind: "domain"; domain: string };
 
 /** Per-environment Cloudflare KV namespace ids (the `CF_ROLLOUTS__*_NAMESPACE` values). */
 export type NamespaceMap = {
@@ -18,45 +18,43 @@ export type NamespaceMap = {
   org?: string;
 };
 
-/**
- * What the action will do, derived from which inputs are present:
- * - `deploy`   — upload the built `folder` to `<packageName>/<version>/`.
- * - `redeploy` — copy an already-uploaded `<packageName>/<sourceVersion>/` to
- *   `<packageName>/<version>/` (no rebuild), e.g. promoting a dev build to a
- *   release tag.
- * - `repoint`  — only move the KV pointer to an already-uploaded `version`.
- */
-export type DeployMode = "deploy" | "redeploy" | "repoint";
+/** A resolved KV write target: which namespace, for which environment. */
+export type KvTarget = { environment: Environment; namespaceId: string };
 
-export type DeployPlan = {
-  mode: DeployMode;
-  packageName: string;
-  /** The version the KV record will point at and the S3 target prefix. */
-  version: string;
-  /** Only set for `redeploy`: the version whose objects are copied from. */
-  sourceVersion?: string;
+/** What the state-aware S3 step should do for the target version. */
+export type S3Action = "upload" | "copy" | "skip";
+
+export type EnsurePlan = {
+  s3: S3Action;
+  /** For `copy`: the version to copy from. */
+  source?: string;
 };
 
 /** Fully-resolved, validated action inputs. */
 export type ActionInputs = {
-  /** Pre-built directory to upload. Empty in redeploy/repoint modes. */
+  /** Pre-built directory to upload (deploy). Empty for copy/repoint flows. */
   folder: string;
-  packageName?: string;
+  packageName: string;
+  baseVersion: string;
   target: DeploymentTarget;
+  /** Environments whose KV gets repointed. Empty = stage only (S3, no KV). */
+  environments: Environment[];
+  /** `environments` resolved to namespace ids. */
+  kvTargets: KvTarget[];
   deploymentName: string;
   percentage: number;
-  /** Explicit target version (e.g. a release tag). Required when no `folder`. */
+  /** Explicit target version (e.g. a release tag). Defaults to the commit version. */
   version?: string;
-  /** Source version to copy from (triggers redeploy mode). */
+  /** Explicit version to copy from; otherwise the commit version is used for a release. */
   sourceVersion?: string;
   /** Fail a deploy if the folder has no index.html at its root (default true). */
   requireIndex: boolean;
+  /** Redo the S3 upload/copy even when the target bytes are already present. */
+  force: boolean;
   awsRegion: string;
   s3Bucket: string;
   cloudflareAccountId: string;
   cloudflareApiToken: string;
-  /** Namespace id resolved from `target.environment` (or the explicit override). */
-  namespaceId: string;
   slackWebhook?: string;
   createGithubDeployment: boolean;
   cdnBaseUrl: string;

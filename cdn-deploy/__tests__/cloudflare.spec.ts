@@ -3,6 +3,7 @@ import {
   createCloudflareKV,
   FetchLike,
   patchRolloutInKV,
+  patchRolloutInNamespaces,
   rolloutHasVersion,
 } from "../src/cloudflare";
 
@@ -252,5 +253,52 @@ describe("when checking whether a rollout already has a version", () => {
         })
       ).resolves.toBe(false);
     });
+  });
+});
+
+describe("when patching a rollout across multiple namespaces", () => {
+  let fetchMock: jest.MockedFunction<FetchLike>;
+
+  beforeEach(() => {
+    // GET (no method) -> 404 (empty current value); PUT -> success envelope.
+    fetchMock = jest.fn((_url, init) =>
+      Promise.resolve(init?.method === "PUT" ? response(200, '{"success":true}') : response(404, "not found"))
+    );
+  });
+
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
+
+  it("should return every namespace it wrote", async () => {
+    await expect(
+      patchRolloutInNamespaces({ accountId: "acc", apiToken: "tok", fetch: fetchMock }, ["ns-zone", "ns-today"], {
+        key: "sites",
+        rolloutName: "_site",
+        percentage: 100,
+        prefix: "@dcl/sites",
+        version: "1.0.0",
+        timestamp: 1700000000000,
+      })
+    ).resolves.toEqual(["ns-zone", "ns-today"]);
+  });
+
+  it("should PUT to each namespace's values endpoint", async () => {
+    await patchRolloutInNamespaces({ accountId: "acc", apiToken: "tok", fetch: fetchMock }, ["ns-zone", "ns-today"], {
+      key: "sites",
+      rolloutName: "_site",
+      percentage: 100,
+      prefix: "@dcl/sites",
+      version: "1.0.0",
+      timestamp: 1700000000000,
+    });
+
+    const putUrls = fetchMock.mock.calls
+      .filter((c) => (c[1] as { method?: string } | undefined)?.method === "PUT")
+      .map((c) => c[0]);
+    expect(putUrls).toEqual([
+      "https://api.cloudflare.com/client/v4/accounts/acc/storage/kv/namespaces/ns-zone/values/sites",
+      "https://api.cloudflare.com/client/v4/accounts/acc/storage/kv/namespaces/ns-today/values/sites",
+    ]);
   });
 });
