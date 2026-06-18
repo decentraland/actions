@@ -81313,8 +81313,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createCloudflareKV = createCloudflareKV;
 exports.patchRolloutInKV = patchRolloutInKV;
-exports.patchRolloutInNamespaces = patchRolloutInNamespaces;
-exports.rolloutHasVersion = rolloutHasVersion;
+exports.patchRolloutInEnvironments = patchRolloutInEnvironments;
 const node_fetch_1 = __importDefault(__nccwpck_require__(26705));
 const rollouts_lib_1 = __nccwpck_require__(563);
 /**
@@ -81324,7 +81323,9 @@ const rollouts_lib_1 = __nccwpck_require__(563);
  */
 function createCloudflareKV(opts) {
     const doFetch = opts.fetch || node_fetch_1.default;
-    const valueUrl = (key) => `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/storage/kv/namespaces/${opts.namespaceId}/values/${encodeURI(key)}`;
+    // A KV key is a single opaque path segment — encodeURIComponent (not
+    // encodeURI) so `/`, `.`, `?`, `#` can't alter the request path.
+    const valueUrl = (key) => `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/storage/kv/namespaces/${opts.namespaceId}/values/${encodeURIComponent(key)}`;
     return {
         async get(key) {
             const res = await doFetch(valueUrl(key), {
@@ -81370,45 +81371,45 @@ function createCloudflareKV(opts) {
 async function patchRolloutInKV(kv, params) {
     const current = await kv.get(params.key);
     const currentValues = current ? JSON.parse(current) : { records: {} };
-    const newValues = (0, rollouts_lib_1.patchRollouts)(currentValues, params.rolloutName, { percentage: params.percentage | 0, prefix: params.prefix, version: params.version }, params.timestamp);
+    const newValues = (0, rollouts_lib_1.patchRollouts)(currentValues, params.rolloutName, { percentage: params.percentage, prefix: params.prefix, version: params.version }, params.timestamp);
     await kv.put(params.key, JSON.stringify(newValues));
     return newValues;
 }
 /**
- * Patch the same rollout record into several namespaces (one per environment),
+ * Patch the same rollout record into several environments (one namespace each),
  * sharing the account + token. Used to point multiple environments at one
- * version after a single S3 upload. Returns the namespaces written.
+ * version after a single S3 upload.
+ *
+ * Cloudflare KV has no cross-namespace transaction, so this attempts EVERY
+ * environment and, if any fail, throws an aggregate error naming which
+ * environments were already updated and which failed — so a partial write
+ * (e.g. zone succeeded, today failed) is visible rather than hidden behind an
+ * abort on the first failure. Returns the environments successfully written.
  */
-async function patchRolloutInNamespaces(account, namespaceIds, params) {
-    for (const namespaceId of namespaceIds) {
-        const kv = createCloudflareKV({
-            accountId: account.accountId,
-            apiToken: account.apiToken,
-            namespaceId,
-            fetch: account.fetch,
-        });
-        await patchRolloutInKV(kv, params);
+async function patchRolloutInEnvironments(account, targets, params) {
+    const succeeded = [];
+    const failures = [];
+    for (const { environment, namespaceId } of targets) {
+        try {
+            const kv = createCloudflareKV({
+                accountId: account.accountId,
+                apiToken: account.apiToken,
+                namespaceId,
+                fetch: account.fetch,
+            });
+            await patchRolloutInKV(kv, params);
+            succeeded.push(environment);
+        }
+        catch (e) {
+            failures.push({ environment, error: e instanceof Error ? e.message : String(e) });
+        }
     }
-    return namespaceIds;
-}
-/**
- * Best-effort read-after-write check: re-read the key and confirm the version
- * is present in the rollout. Cloudflare KV is eventually consistent, so a
- * `false` here is informational (the authoritative signal is the PUT envelope),
- * not a hard failure.
- */
-async function rolloutHasVersion(kv, params) {
-    const raw = await kv.get(params.key);
-    if (!raw)
-        return false;
-    try {
-        const value = JSON.parse(raw);
-        const records = value.records?.[params.rolloutName] || [];
-        return records.some((r) => r.version === params.version);
+    if (failures.length) {
+        const already = succeeded.length ? ` Already updated: ${succeeded.join(", ")}.` : "";
+        throw new Error(`KV update failed for: ${failures.map((f) => f.environment).join(", ")}.${already} ` +
+            `First error: ${failures[0].error}`);
     }
-    catch {
-        return false;
-    }
+    return succeeded;
 }
 
 
@@ -81542,6 +81543,9 @@ function createObservability(opts) {
                 if (data && typeof data.id === "number")
                     deploymentId = data.id;
             });
+            if (!deploymentId) {
+                core.warning("GitHub deployment id unavailable (e.g. a 202 response) — deployment status won't be recorded.");
+            }
             await deploymentStatus("in_progress");
             await commitStatus("pending", "Deploying to CDN");
         },
@@ -81701,7 +81705,7 @@ async function run() {
         }
         else {
             await core.group(`Setting rollout "${inputs.deploymentName}" on "${key}" for ${envs.join(", ")}`, async () => {
-                await (0, cloudflare_1.patchRolloutInNamespaces)({ accountId: inputs.cloudflareAccountId, apiToken: inputs.cloudflareApiToken }, inputs.kvTargets.map((t) => t.namespaceId), {
+                await (0, cloudflare_1.patchRolloutInEnvironments)({ accountId: inputs.cloudflareAccountId, apiToken: inputs.cloudflareApiToken }, inputs.kvTargets, {
                     key,
                     rolloutName: inputs.deploymentName,
                     percentage: inputs.percentage,
@@ -81890,8 +81894,10 @@ function resolveKvTargets(environments, map, override) {
 }
 function parsePercentage(raw) {
     const pct = raw === "" ? 100 : Number(raw);
-    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
-        throw new Error(`Invalid percentage "${raw}". Expected a number between 0 and 100.`);
+    // Rollout percentages are integers; a fractional value would be silently
+    // truncated when stored, so reject it instead.
+    if (!Number.isInteger(pct) || pct < 0 || pct > 100) {
+        throw new Error(`Invalid percentage "${raw}". Expected an integer between 0 and 100.`);
     }
     return pct;
 }
@@ -81927,9 +81933,12 @@ function readInputs() {
     if (folder && !fs.existsSync(folder)) {
         throw new Error(`folder "${folder}" does not exist`);
     }
-    // Read package.json from the folder (deploy), else the repo root (a manual
-    // commit deploy checks the repo out so the base version is available here).
-    const pkg = readPackageJson(folder || ".");
+    // Identity (package name + base version) comes from the repo-root package.json
+    // — the source of truth — NOT the upload folder. A built `./dist` may have no
+    // package.json, and copy/repoint flows have no folder at all; reading the root
+    // keeps the computed version consistent across deploy/release/manual runs (the
+    // reusable workflow always checks the repo out so it's present).
+    const pkg = readPackageJson(".");
     const packageName = core.getInput("package-name") || pkg.name;
     if (!packageName) {
         throw new Error("Unable to resolve package name. Set the `package-name` input or add a " +

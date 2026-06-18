@@ -77,8 +77,10 @@ export function resolveKvTargets(
 
 export function parsePercentage(raw: string): number {
   const pct = raw === "" ? 100 : Number(raw);
-  if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
-    throw new Error(`Invalid percentage "${raw}". Expected a number between 0 and 100.`);
+  // Rollout percentages are integers; a fractional value would be silently
+  // truncated when stored, so reject it instead.
+  if (!Number.isInteger(pct) || pct < 0 || pct > 100) {
+    throw new Error(`Invalid percentage "${raw}". Expected an integer between 0 and 100.`);
   }
   return pct;
 }
@@ -118,9 +120,12 @@ export function readInputs(): ActionInputs {
     throw new Error(`folder "${folder}" does not exist`);
   }
 
-  // Read package.json from the folder (deploy), else the repo root (a manual
-  // commit deploy checks the repo out so the base version is available here).
-  const pkg = readPackageJson(folder || ".");
+  // Identity (package name + base version) comes from the repo-root package.json
+  // — the source of truth — NOT the upload folder. A built `./dist` may have no
+  // package.json, and copy/repoint flows have no folder at all; reading the root
+  // keeps the computed version consistent across deploy/release/manual runs (the
+  // reusable workflow always checks the repo out so it's present).
+  const pkg = readPackageJson(".");
   const packageName = core.getInput("package-name") || pkg.name;
   if (!packageName) {
     throw new Error(

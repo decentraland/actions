@@ -36,8 +36,10 @@ export function createCloudflareKV(opts: {
 }): CloudflareKV {
   const doFetch: FetchLike = opts.fetch || (nodeFetch as unknown as FetchLike);
 
+  // A KV key is a single opaque path segment — encodeURIComponent (not
+  // encodeURI) so `/`, `.`, `?`, `#` can't alter the request path.
   const valueUrl = (key: string) =>
-    `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/storage/kv/namespaces/${opts.namespaceId}/values/${encodeURI(key)}`;
+    `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/storage/kv/namespaces/${opts.namespaceId}/values/${encodeURIComponent(key)}`;
 
   return {
     async get(key) {
@@ -98,7 +100,7 @@ export async function patchRolloutInKV(
   const newValues = patchRollouts(
     currentValues,
     params.rolloutName,
-    { percentage: params.percentage | 0, prefix: params.prefix, version: params.version },
+    { percentage: params.percentage, prefix: params.prefix, version: params.version },
     params.timestamp
   ) as RolloutDomain;
 
@@ -107,13 +109,19 @@ export async function patchRolloutInKV(
 }
 
 /**
- * Patch the same rollout record into several namespaces (one per environment),
+ * Patch the same rollout record into several environments (one namespace each),
  * sharing the account + token. Used to point multiple environments at one
- * version after a single S3 upload. Returns the namespaces written.
+ * version after a single S3 upload.
+ *
+ * Cloudflare KV has no cross-namespace transaction, so this attempts EVERY
+ * environment and, if any fail, throws an aggregate error naming which
+ * environments were already updated and which failed — so a partial write
+ * (e.g. zone succeeded, today failed) is visible rather than hidden behind an
+ * abort on the first failure. Returns the environments successfully written.
  */
-export async function patchRolloutInNamespaces(
+export async function patchRolloutInEnvironments(
   account: { accountId: string; apiToken: string; fetch?: FetchLike },
-  namespaceIds: string[],
+  targets: { environment: string; namespaceId: string }[],
   params: {
     key: string;
     rolloutName: string;
@@ -123,35 +131,30 @@ export async function patchRolloutInNamespaces(
     timestamp: number;
   }
 ): Promise<string[]> {
-  for (const namespaceId of namespaceIds) {
-    const kv = createCloudflareKV({
-      accountId: account.accountId,
-      apiToken: account.apiToken,
-      namespaceId,
-      fetch: account.fetch,
-    });
-    await patchRolloutInKV(kv, params);
-  }
-  return namespaceIds;
-}
+  const succeeded: string[] = [];
+  const failures: { environment: string; error: string }[] = [];
 
-/**
- * Best-effort read-after-write check: re-read the key and confirm the version
- * is present in the rollout. Cloudflare KV is eventually consistent, so a
- * `false` here is informational (the authoritative signal is the PUT envelope),
- * not a hard failure.
- */
-export async function rolloutHasVersion(
-  kv: CloudflareKV,
-  params: { key: string; rolloutName: string; version: string }
-): Promise<boolean> {
-  const raw = await kv.get(params.key);
-  if (!raw) return false;
-  try {
-    const value = JSON.parse(raw) as RolloutDomain;
-    const records = value.records?.[params.rolloutName] || [];
-    return records.some((r) => r.version === params.version);
-  } catch {
-    return false;
+  for (const { environment, namespaceId } of targets) {
+    try {
+      const kv = createCloudflareKV({
+        accountId: account.accountId,
+        apiToken: account.apiToken,
+        namespaceId,
+        fetch: account.fetch,
+      });
+      await patchRolloutInKV(kv, params);
+      succeeded.push(environment);
+    } catch (e) {
+      failures.push({ environment, error: e instanceof Error ? e.message : String(e) });
+    }
   }
+
+  if (failures.length) {
+    const already = succeeded.length ? ` Already updated: ${succeeded.join(", ")}.` : "";
+    throw new Error(
+      `KV update failed for: ${failures.map((f) => f.environment).join(", ")}.${already} ` +
+        `First error: ${failures[0].error}`
+    );
+  }
+  return succeeded;
 }

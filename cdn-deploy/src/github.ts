@@ -107,6 +107,11 @@ export function createObservability(opts: {
         const data = created.data as { id?: number };
         if (data && typeof data.id === "number") deploymentId = data.id;
       });
+      if (!deploymentId) {
+        core.warning(
+          "GitHub deployment id unavailable (e.g. a 202 response) — deployment status won't be recorded."
+        );
+      }
       await deploymentStatus("in_progress");
       await commitStatus("pending", "Deploying to CDN");
     },

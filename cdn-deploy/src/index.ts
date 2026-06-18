@@ -4,9 +4,10 @@ import { folderHasIndexHtml, kvKeyForTarget, readInputs, rolloutUrlForTarget } f
 import { computeVersion } from "./version";
 import { resolveEnsurePlan } from "./plan";
 import { copyFolderInS3, objectExists, uploadFolderToS3 } from "./s3";
-import { patchRolloutInNamespaces } from "./cloudflare";
+import { patchRolloutInEnvironments } from "./cloudflare";
 import { notifyRollout } from "./slack";
 import { createObservability } from "./github";
+import { S3Action } from "./types";
 
 async function run(): Promise<void> {
   const inputs = readInputs();
@@ -44,7 +45,7 @@ async function run(): Promise<void> {
   });
   await observability.start();
 
-  let s3Action = "skip";
+  let s3Action: S3Action = "skip";
   try {
     // 1) Ensure the target bytes are in S3 (state-aware). Skipped entirely for a
     //    pure repoint (target named by the commit, no folder/source/force).
@@ -111,9 +112,9 @@ async function run(): Promise<void> {
       core.info("> Stage only: bytes are in S3, KV left unchanged.");
     } else {
       await core.group(`Setting rollout "${inputs.deploymentName}" on "${key}" for ${envs.join(", ")}`, async () => {
-        await patchRolloutInNamespaces(
+        await patchRolloutInEnvironments(
           { accountId: inputs.cloudflareAccountId, apiToken: inputs.cloudflareApiToken },
-          inputs.kvTargets.map((t) => t.namespaceId),
+          inputs.kvTargets,
           {
             key,
             rolloutName: inputs.deploymentName,
@@ -167,7 +168,7 @@ async function run(): Promise<void> {
 
 /** Best-effort GitHub job summary table (no-op outside Actions / on failure). */
 async function writeSummary(s: {
-  s3Action: string;
+  s3Action: S3Action;
   packageName: string;
   version: string;
   environments: string[];
