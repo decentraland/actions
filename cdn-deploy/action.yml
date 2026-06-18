@@ -5,8 +5,8 @@ branding:
   color: "blue"
 
 inputs:
-  folder:
-    description: "Pre-built site directory to upload (e.g. ./dist). Required for a normal deploy; omit for redeploy (`source-version`) or repoint (`version`)."
+  dist-path:
+    description: "Path to the pre-built site directory to upload (e.g. ./dist). The caller builds it. Required for a normal deploy; omit for a release copy (`version`) or a repoint."
     required: false
   source-version:
     description: "Explicit version in S3 to copy FROM. Usually unnecessary: for a release (target `version` != the commit version) the action copies the commit's already-uploaded build by default. Set this to override that source."
@@ -15,7 +15,7 @@ inputs:
     description: "Commit sha to compute the version from (manual deploy by commit). Defaults to the workflow commit. Requires the repo checked out at that commit so the base version is read from package.json."
     required: false
   package-name:
-    description: "CDN prefix / S3 key root / KV record prefix. Defaults to `name` from <folder>/package.json. Required when no `folder` is provided."
+    description: "CDN prefix / S3 key root / KV record prefix. Defaults to `name` from the repo-root package.json."
     required: false
   deployment-path:
     description: "Path-based KV key (e.g. `auth`). Defaults to the package name without its `@scope/` and trailing `-site`. Mutually exclusive with `domain`."
@@ -46,7 +46,7 @@ inputs:
     required: false
     default: "true"
   version:
-    description: "Target version. Defaults to a computed deterministic snapshot for a deploy. Provide it to deploy/redeploy under a specific version (e.g. a release tag), or alone (no `folder`/`source-version`) to repoint the KV at an already-uploaded version. Required when no `folder` is provided."
+    description: "Target version. Defaults to a computed deterministic snapshot for a deploy. Provide it to deploy/redeploy under a specific version (e.g. a release tag), or alone (no `dist-path`/`source-version`) to repoint the KV at an already-uploaded version. Required when no `dist-path` is provided."
     required: false
   aws-region:
     description: "AWS region for STS / S3."
@@ -110,7 +110,7 @@ runs:
     # already-deployed? check). A pure repoint to the commit version — no folder,
     # source, version, or force — writes just the KV pointer and needs no creds.
     - name: Configure AWS credentials (OIDC)
-      if: ${{ inputs.folder != '' || inputs.source-version != '' || inputs.commit != '' || inputs.version != '' || inputs.force == 'true' }}
+      if: ${{ inputs.dist-path != '' || inputs.source-version != '' || inputs.commit != '' || inputs.version != '' || inputs.force == 'true' }}
       uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
       with:
         role-to-assume: ${{ inputs.aws-role-to-assume }}
@@ -122,7 +122,7 @@ runs:
       shell: bash
       run: node "$GITHUB_ACTION_PATH/dist/index.js"
       env:
-        INPUT_FOLDER: ${{ inputs.folder }}
+        INPUT_DIST-PATH: ${{ inputs.dist-path }}
         INPUT_SOURCE-VERSION: ${{ inputs.source-version }}
         INPUT_COMMIT: ${{ inputs.commit }}
         INPUT_PACKAGE-NAME: ${{ inputs.package-name }}

@@ -33,7 +33,7 @@ export type EnsurePlan = {
 /** Fully-resolved, validated action inputs. */
 export type ActionInputs = {
   /** Pre-built directory to upload (deploy). Empty for copy/repoint flows. */
-  folder: string;
+  distPath: string;
   packageName: string;
   baseVersion: string;
   target: DeploymentTarget;
