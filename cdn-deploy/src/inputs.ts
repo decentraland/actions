@@ -114,10 +114,10 @@ export function readPackageJson(folder: string): { name?: string; version?: stri
 
 /** Read and validate all action inputs from the environment via @actions/core. */
 export function readInputs(): ActionInputs {
-  // folder is optional: copy/repoint flows don't upload from disk. When provided, it must exist.
-  const folder = core.getInput("folder");
-  if (folder && !fs.existsSync(folder)) {
-    throw new Error(`folder "${folder}" does not exist`);
+  // dist-path is optional: copy/repoint flows don't upload from disk. When provided, it must exist.
+  const distPath = core.getInput("dist-path");
+  if (distPath && !fs.existsSync(distPath)) {
+    throw new Error(`dist-path "${distPath}" does not exist`);
   }
 
   // Identity (package name + base version) comes from the repo-root package.json
@@ -159,7 +159,7 @@ export function readInputs(): ActionInputs {
   );
 
   return {
-    folder,
+    distPath,
     packageName,
     baseVersion: pkg.version || "0.0.0",
     target,

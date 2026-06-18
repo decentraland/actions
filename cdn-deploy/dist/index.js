@@ -81645,14 +81645,14 @@ async function run() {
     try {
         // 1) Ensure the target bytes are in S3 (state-aware). Skipped entirely for a
         //    pure repoint (target named by the commit, no folder/source/force).
-        const needsS3 = !!inputs.folder ||
+        const needsS3 = !!inputs.distPath ||
             !!inputs.sourceVersion ||
             !!inputs.commit ||
             inputs.force ||
             targetVersion !== commitVersion;
         if (needsS3) {
-            if (inputs.folder && inputs.requireIndex && !(0, inputs_1.folderHasIndexHtml)(inputs.folder)) {
-                throw new Error(`No index.html found at the root of "${inputs.folder}". The build looks empty or ` +
+            if (inputs.distPath && inputs.requireIndex && !(0, inputs_1.folderHasIndexHtml)(inputs.distPath)) {
+                throw new Error(`No index.html found at the root of "${inputs.distPath}". The build looks empty or ` +
                     "misconfigured. Set `require-index: false` to deploy anyway.");
             }
             const targetExists = await (0, s3_1.objectExists)({
@@ -81661,7 +81661,7 @@ async function run() {
                 key: `${remoteFolder}/index.html`,
             });
             const plan = (0, plan_1.resolveEnsurePlan)({
-                folderPresent: !!inputs.folder,
+                folderPresent: !!inputs.distPath,
                 sourceVersion: inputs.sourceVersion,
                 targetVersion,
                 commitVersion,
@@ -81685,11 +81685,11 @@ async function run() {
                 });
             }
             else {
-                await core.group(`Uploading ${inputs.folder} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
+                await core.group(`Uploading ${inputs.distPath} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
                     const uploaded = await (0, s3_1.uploadFolderToS3)({
                         region: inputs.awsRegion,
                         bucket: inputs.s3Bucket,
-                        folder: inputs.folder,
+                        folder: inputs.distPath,
                         remoteFolder,
                     });
                     core.info(`Uploaded ${uploaded.length} files.`);
@@ -81928,10 +81928,10 @@ function readPackageJson(folder) {
 }
 /** Read and validate all action inputs from the environment via @actions/core. */
 function readInputs() {
-    // folder is optional: copy/repoint flows don't upload from disk. When provided, it must exist.
-    const folder = core.getInput("folder");
-    if (folder && !fs.existsSync(folder)) {
-        throw new Error(`folder "${folder}" does not exist`);
+    // dist-path is optional: copy/repoint flows don't upload from disk. When provided, it must exist.
+    const distPath = core.getInput("dist-path");
+    if (distPath && !fs.existsSync(distPath)) {
+        throw new Error(`dist-path "${distPath}" does not exist`);
     }
     // Identity (package name + base version) comes from the repo-root package.json
     // — the source of truth — NOT the upload folder. A built `./dist` may have no
@@ -81965,7 +81965,7 @@ function readInputs() {
         org: core.getInput("cloudflare-namespace-org") || undefined,
     }, core.getInput("cloudflare-namespace-id") || undefined);
     return {
-        folder,
+        distPath,
         packageName,
         baseVersion: pkg.version || "0.0.0",
         target,

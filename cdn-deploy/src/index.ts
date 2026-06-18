@@ -50,16 +50,16 @@ async function run(): Promise<void> {
     // 1) Ensure the target bytes are in S3 (state-aware). Skipped entirely for a
     //    pure repoint (target named by the commit, no folder/source/force).
     const needsS3 =
-      !!inputs.folder ||
+      !!inputs.distPath ||
       !!inputs.sourceVersion ||
       !!inputs.commit ||
       inputs.force ||
       targetVersion !== commitVersion;
 
     if (needsS3) {
-      if (inputs.folder && inputs.requireIndex && !folderHasIndexHtml(inputs.folder)) {
+      if (inputs.distPath && inputs.requireIndex && !folderHasIndexHtml(inputs.distPath)) {
         throw new Error(
-          `No index.html found at the root of "${inputs.folder}". The build looks empty or ` +
+          `No index.html found at the root of "${inputs.distPath}". The build looks empty or ` +
             "misconfigured. Set `require-index: false` to deploy anyway."
         );
       }
@@ -70,7 +70,7 @@ async function run(): Promise<void> {
         key: `${remoteFolder}/index.html`,
       });
       const plan = resolveEnsurePlan({
-        folderPresent: !!inputs.folder,
+        folderPresent: !!inputs.distPath,
         sourceVersion: inputs.sourceVersion,
         targetVersion,
         commitVersion,
@@ -93,11 +93,11 @@ async function run(): Promise<void> {
           core.info(`Copied ${copied} objects.`);
         });
       } else {
-        await core.group(`Uploading ${inputs.folder} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
+        await core.group(`Uploading ${inputs.distPath} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
           const uploaded = await uploadFolderToS3({
             region: inputs.awsRegion,
             bucket: inputs.s3Bucket,
-            folder: inputs.folder,
+            folder: inputs.distPath,
             remoteFolder,
           });
           core.info(`Uploaded ${uploaded.length} files.`);
