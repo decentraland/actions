@@ -2,9 +2,8 @@ import {
   CloudflareKV,
   createCloudflareKV,
   FetchLike,
+  patchRolloutInEnvironments,
   patchRolloutInKV,
-  patchRolloutInNamespaces,
-  rolloutHasVersion,
 } from "../src/cloudflare";
 
 type FetchResponse = { ok: boolean; status: number; text(): Promise<string> };
@@ -194,111 +193,68 @@ describe("when patching a rollout in the KV", () => {
   });
 });
 
-describe("when checking whether a rollout already has a version", () => {
-  let kvMock: { get: jest.Mock; put: jest.Mock };
-
-  beforeEach(() => {
-    kvMock = { get: jest.fn(), put: jest.fn() };
-  });
+describe("when patching a rollout across multiple environments", () => {
+  let fetchMock: jest.MockedFunction<FetchLike>;
+  const targets = [
+    { environment: "zone", namespaceId: "ns-zone" },
+    { environment: "today", namespaceId: "ns-today" },
+  ];
+  const params = {
+    key: "sites",
+    rolloutName: "_site",
+    percentage: 100,
+    prefix: "@dcl/sites",
+    version: "1.0.0",
+    timestamp: 1700000000000,
+  };
 
   afterEach(() => {
     jest.resetAllMocks();
   });
 
-  describe("and the version is present in the rollout", () => {
+  describe("and every namespace accepts the write", () => {
     beforeEach(() => {
-      kvMock.get.mockResolvedValueOnce(
-        JSON.stringify({ records: { _site: [{ version: "1.0.0", percentage: 100, prefix: "p" }] } })
+      // GET (no method) -> 404 (empty current value); PUT -> success envelope.
+      fetchMock = jest.fn((_url, init) =>
+        Promise.resolve(
+          init?.method === "PUT" ? response(200, '{"success":true}') : response(404, "not found")
+        )
       );
     });
 
-    it("should return true", async () => {
+    it("should return every environment it wrote", async () => {
       await expect(
-        rolloutHasVersion(kvMock as unknown as CloudflareKV, {
-          key: "auth",
-          rolloutName: "_site",
-          version: "1.0.0",
-        })
-      ).resolves.toBe(true);
+        patchRolloutInEnvironments({ accountId: "acc", apiToken: "tok", fetch: fetchMock }, targets, params)
+      ).resolves.toEqual(["zone", "today"]);
+    });
+
+    it("should PUT to each namespace's values endpoint", async () => {
+      await patchRolloutInEnvironments({ accountId: "acc", apiToken: "tok", fetch: fetchMock }, targets, params);
+      const putUrls = fetchMock.mock.calls
+        .filter((c) => (c[1] as { method?: string } | undefined)?.method === "PUT")
+        .map((c) => c[0]);
+      expect(putUrls).toEqual([
+        "https://api.cloudflare.com/client/v4/accounts/acc/storage/kv/namespaces/ns-zone/values/sites",
+        "https://api.cloudflare.com/client/v4/accounts/acc/storage/kv/namespaces/ns-today/values/sites",
+      ]);
     });
   });
 
-  describe("and the key has no value", () => {
+  describe("and one namespace fails after another already succeeded", () => {
     beforeEach(() => {
-      kvMock.get.mockResolvedValueOnce(null);
+      // zone: GET 404 then PUT ok. today: GET 404 then PUT 403 (fails).
+      fetchMock = jest.fn((url, init) => {
+        if (init?.method !== "PUT") return Promise.resolve(response(404, "not found"));
+        return Promise.resolve(
+          url.includes("ns-today") ? response(403, "forbidden") : response(200, '{"success":true}')
+        );
+      });
     });
 
-    it("should return false", async () => {
+    it("should attempt all envs and throw naming the failed and the already-updated ones", async () => {
       await expect(
-        rolloutHasVersion(kvMock as unknown as CloudflareKV, {
-          key: "auth",
-          rolloutName: "_site",
-          version: "1.0.0",
-        })
-      ).resolves.toBe(false);
+        patchRolloutInEnvironments({ accountId: "acc", apiToken: "tok", fetch: fetchMock }, targets, params)
+      ).rejects.toThrow(/failed for: today.*Already updated: zone/s);
     });
-  });
-
-  describe("and the stored value is not valid JSON", () => {
-    beforeEach(() => {
-      kvMock.get.mockResolvedValueOnce("not-json");
-    });
-
-    it("should return false", async () => {
-      await expect(
-        rolloutHasVersion(kvMock as unknown as CloudflareKV, {
-          key: "auth",
-          rolloutName: "_site",
-          version: "1.0.0",
-        })
-      ).resolves.toBe(false);
-    });
-  });
-});
-
-describe("when patching a rollout across multiple namespaces", () => {
-  let fetchMock: jest.MockedFunction<FetchLike>;
-
-  beforeEach(() => {
-    // GET (no method) -> 404 (empty current value); PUT -> success envelope.
-    fetchMock = jest.fn((_url, init) =>
-      Promise.resolve(init?.method === "PUT" ? response(200, '{"success":true}') : response(404, "not found"))
-    );
-  });
-
-  afterEach(() => {
-    jest.resetAllMocks();
-  });
-
-  it("should return every namespace it wrote", async () => {
-    await expect(
-      patchRolloutInNamespaces({ accountId: "acc", apiToken: "tok", fetch: fetchMock }, ["ns-zone", "ns-today"], {
-        key: "sites",
-        rolloutName: "_site",
-        percentage: 100,
-        prefix: "@dcl/sites",
-        version: "1.0.0",
-        timestamp: 1700000000000,
-      })
-    ).resolves.toEqual(["ns-zone", "ns-today"]);
-  });
-
-  it("should PUT to each namespace's values endpoint", async () => {
-    await patchRolloutInNamespaces({ accountId: "acc", apiToken: "tok", fetch: fetchMock }, ["ns-zone", "ns-today"], {
-      key: "sites",
-      rolloutName: "_site",
-      percentage: 100,
-      prefix: "@dcl/sites",
-      version: "1.0.0",
-      timestamp: 1700000000000,
-    });
-
-    const putUrls = fetchMock.mock.calls
-      .filter((c) => (c[1] as { method?: string } | undefined)?.method === "PUT")
-      .map((c) => c[0]);
-    expect(putUrls).toEqual([
-      "https://api.cloudflare.com/client/v4/accounts/acc/storage/kv/namespaces/ns-zone/values/sites",
-      "https://api.cloudflare.com/client/v4/accounts/acc/storage/kv/namespaces/ns-today/values/sites",
-    ]);
   });
 });

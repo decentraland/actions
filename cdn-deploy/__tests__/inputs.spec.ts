@@ -166,6 +166,12 @@ describe("when parsing the percentage", () => {
       expect(() => parsePercentage("150")).toThrow('Invalid percentage "150"');
     });
   });
+
+  describe("and the value is fractional", () => {
+    it("should throw (percentages are integers)", () => {
+      expect(() => parsePercentage("50.5")).toThrow('Invalid percentage "50.5"');
+    });
+  });
 });
 
 describe("when deriving the KV key from a target", () => {

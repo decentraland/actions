@@ -27,6 +27,8 @@ There are no explicit "modes". The action figures out the S3 work from whether t
 
 The version is **commit-deterministic**: `<package.json version>-commit-<shortSha>` (no run id). So a later run on the same commit reconstructs the same S3 path — which is how a release **copies the build the last `master` commit already uploaded to dev**, with no rebuild.
 
+The package name and base version are read from the **repo-root `package.json`** (not the upload folder — a built `./dist` may not contain one), so every flow (deploy, release-copy, manual) computes the same version for a given commit. The repo must be checked out; the reusable workflow always does this.
+
 ## Quick start (reusable workflow)
 
 One-time **org** setup (admin, once — not per repo): secrets `CF_KV_API_TOKEN`, `ROLLOUTS_SLACK_WEBHOOK`, `CF_NS_ZONE`, `CF_NS_TODAY`, `CF_NS_ORG`; variables `CF_ACCOUNT_ID`, `CDN_DEPLOY_ROLE_ARN`. The bucket, region and CDN url are defaulted in the action; the KV namespace ids are org secrets (they live in a private repo, so they're not hardcoded here).
@@ -76,7 +78,7 @@ jobs:
 | `source-version` | | commit version (for a release) | Explicit version to copy from. |
 | `commit` | | workflow commit | Commit sha to compute the version from (manual deploy by commit). Needs the repo checked out at it. |
 | `force` | | `false` | Re-upload/copy even when the target is already in S3. |
-| `percentage` | | `100` | Rollout percentage (0–100). |
+| `percentage` | | `100` | Rollout percentage (integer 0–100). |
 | `deployment-name` | | `_site` | Rollout name (key into `records`). |
 | `require-index` | | `true` | Fail an upload if the folder has no `index.html` at its root. |
 | `aws-region` | | `us-east-1` | STS / S3 region. |
