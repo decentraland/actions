@@ -1,4 +1,4 @@
-name: Deploy 'latest' tag to environment
+name: Manually deploy a service tag to an environment
 
 on:
   workflow_dispatch:
@@ -11,11 +11,11 @@ on:
         required: true
         type: choice
         options:
-          - prd
           - dev
+          - prd
           - stg
           - biz
-        default: prd
+        default: dev
         description: Target environment
       tag:
         required: true
@@ -30,6 +30,21 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.deployment-environment }}
     steps:
+      # prd must run an immutable reference. A mutable tag (latest/next) can be repointed, or its
+      # digest GC'd out from under a running task (CannotPullContainerError). Block it on prd.
+      - name: Block mutable tags on prd
+        if: ${{ inputs.deployment-environment == 'prd' }}
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          # Block latest/next, including a digest-pinned form (latest@sha256:…). A digest pin
+          # guarantees content but not persistence: once latest/next moves off that digest and no
+          # retained tag remains, Quay GC reaps it and prd fails to pull (CannotPullContainerError).
+          case "$TAG" in
+            latest|next|latest@*|next@*)
+              echo "::error::Refusing to deploy a mutable tag (latest/next) to prd. Pin an immutable version tag."
+              exit 1 ;;
+          esac
       - name: Trigger deployment
         id: deploy
         uses: decentraland/dcl-deploy-action@main
