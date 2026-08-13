@@ -33,10 +33,10 @@ on:
     outputs:
       registry-path:
         description: "Registry path"
-        value: ${{ jobs.quay-build-push.registry-path }}
+        value: ${{ jobs.quay-build-push.outputs.registry-path }}
       registry-paths:
         description: "Registry paths (JSON)"
-        value: ${{ jobs.quay-build-push.registry-paths }}
+        value: ${{ jobs.quay-build-push.outputs.registry-paths }}
 
 jobs:
   quay-build-push:
@@ -46,18 +46,25 @@ jobs:
       registry-paths: ${{ steps.push-to-quay.outputs.registry-paths }}
     steps:
       - uses: actions/checkout@v4.1.4
+      # An empty docker-tag makes the tags expression below fall through and re-push the SHA tag.
+      - name: Require an immutable docker-tag when the SHA tag is skipped
+        if: ${{ github.event_name == 'release' || inputs.skip-commit-sha-tag }}
+        env:
+          DOCKER_TAG: ${{ inputs.docker-tag }}
+        run: |
+          case "$DOCKER_TAG" in
+            ""|latest|next)
+              echo "::error::docker-tag must be an immutable version when the commit-SHA tag is skipped."
+              exit 1 ;;
+          esac
       - name: Build Image
         id: build-image
         uses: redhat-actions/buildah-build@v2.13
         with:
           image: ${{ inputs.service-name }}
           layers: ${{ inputs.layers }}
-          # On main builds the image owns the commit-SHA tag, which dev/biz deployments pin by
-          # digest. On release/versioned builds, re-tagging the same SHA onto a separately built
-          # digest moves the tag off the main build's digest -> it goes untagged -> Quay GC reaps
-          # it -> tasks pinned to it fail with CannotPullContainerError. So skip the SHA tag on
-          # release events (and when skip-commit-sha-tag is set); publish the docker-tag only,
-          # which release callers set to the immutable version (also the deploy's registry-path).
+          # Re-tagging the SHA onto a release-built digest leaves the main build's digest untagged;
+          # Quay GC reaps it and tasks pinned to it fail with CannotPullContainerError.
           tags: ${{ (github.event_name == 'release' || inputs.skip-commit-sha-tag) && inputs.docker-tag || format('{0} {1}', github.sha, inputs.docker-tag) }}
           dockerfiles: |
             ./Dockerfile
