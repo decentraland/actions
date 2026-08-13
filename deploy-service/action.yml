@@ -53,12 +53,12 @@ runs:
                 '{ref: $ref, environment: $env, description: "Container deployment",
                   auto_merge: false, required_contexts: [], task: "dcl/container-deployment",
                   payload: {sha: $sha, serviceName: $svc, dockerImage: $img, env: $env}}' \
-              | gh api "repos/${GITHUB_REPOSITORY}/deployments" --input - --jq '.id')
+              | gh api --method POST "repos/${GITHUB_REPOSITORY}/deployments" --input - --jq '.id')
 
           jq -n --arg env "$env" \
                 --arg log "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
                 '{state: "queued", environment: $env, log_url: $log}' \
-            | gh api "repos/${GITHUB_REPOSITORY}/deployments/${id}/statuses" --input - --silent
+            | gh api --method POST "repos/${GITHUB_REPOSITORY}/deployments/${id}/statuses" --input - --silent
 
           echo "created deployment $id for $env"
           ids+=("$id")
