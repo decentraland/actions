@@ -1,0 +1,62 @@
+name: Deploy service
+description: Create the GitHub Deployment record that webhooks-receiver turns into a Pulumi deploy.
+
+inputs:
+  service-name:
+    required: true
+    description: Name of the service to deploy
+  docker-image:
+    required: true
+    description: Full image reference, e.g. quay.io/decentraland/realm-provider:0.0.17
+  env:
+    required: true
+    description: Target environment. Accepts several, space separated - dev, stg, prd, biz
+  token:
+    required: true
+    description: GitHub token with deployments write
+
+outputs:
+  deployment-ids:
+    description: JSON array of the deployment ids created, one per environment
+    value: ${{ steps.create.outputs.deployment-ids }}
+
+runs:
+  using: composite
+  steps:
+    - id: create
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+        DOCKER_IMAGE: ${{ inputs.docker-image }}
+        ENVS: ${{ inputs.env }}
+      run: |
+        set -euo pipefail
+        ids=()
+        # One deployment per environment: webhooks-receiver validates a single env and rejects a
+        # combined string, so `dev prd` only works as two records.
+        for env in $ENVS; do
+          case "$env" in
+            dev|stg|prd|biz) ;;
+            *) echo "::error::Invalid environment: $env"; exit 1 ;;
+          esac
+
+          # task and payload are a contract with webhooks-receiver, which reads them off the
+          # deployment webhook to trigger the Pulumi pipeline. Do not reshape.
+          id=$(jq -n \
+                --arg ref "$GITHUB_REF" --arg env "$env" --arg sha "$GITHUB_SHA" \
+                --arg svc "$SERVICE_NAME" --arg img "$DOCKER_IMAGE" \
+                '{ref: $ref, environment: $env, description: "Container deployment",
+                  auto_merge: false, required_contexts: [], task: "dcl/container-deployment",
+                  payload: {sha: $sha, serviceName: $svc, dockerImage: $img, env: $env}}' \
+              | gh api "repos/${GITHUB_REPOSITORY}/deployments" --input - --jq '.id')
+
+          jq -n --arg env "$env" \
+                --arg log "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+                '{state: "queued", environment: $env, log_url: $log}' \
+            | gh api "repos/${GITHUB_REPOSITORY}/deployments/${id}/statuses" --input - --silent
+
+          echo "created deployment $id for $env"
+          ids+=("$id")
+        done
+        echo "deployment-ids=$(printf '%s\n' "${ids[@]}" | jq -sc 'map(tonumber)')" >> "$GITHUB_OUTPUT"
