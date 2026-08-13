@@ -33,13 +33,13 @@ jobs:
       contents: read
       deployments: write
     steps:
+      # contains(), not ==: env accepts space-separated values, so "dev prd" must still match.
       - name: Block mutable tags on prd
-        if: ${{ inputs.deployment-environment == 'prd' }}
+        if: ${{ contains(inputs.deployment-environment, 'prd') }}
         env:
           TAG: ${{ inputs.tag }}
         run: |
-          # latest@sha256:… is blocked too: a digest pin guarantees content but not persistence,
-          # since Quay GC reaps the digest once the mutable tag moves off it.
+          # latest@sha256:… blocked too - a digest pin guarantees content, not persistence.
           case "$TAG" in
             latest|next|latest@*|next@*)
               echo "::error::Refusing to deploy a mutable tag (latest/next) to prd. Pin an immutable version tag."

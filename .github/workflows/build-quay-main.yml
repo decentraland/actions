@@ -63,8 +63,7 @@ jobs:
         with:
           image: ${{ inputs.service-name }}
           layers: ${{ inputs.layers }}
-          # Re-tagging the SHA onto a release-built digest leaves the main build's digest untagged;
-          # Quay GC reaps it and tasks pinned to it fail with CannotPullContainerError.
+          # Re-tagging the SHA onto a release digest orphans the main build's; Quay GC reaps it -> CannotPullContainerError.
           tags: ${{ (github.event_name == 'release' || inputs.skip-commit-sha-tag) && inputs.docker-tag || format('{0} {1}', github.sha, inputs.docker-tag) }}
           dockerfiles: |
             ./Dockerfile

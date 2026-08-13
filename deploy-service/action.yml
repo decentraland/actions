@@ -32,17 +32,21 @@ runs:
         ENVS: ${{ inputs.env }}
       run: |
         set -euo pipefail
+        # read -ra, not unquoted $ENVS: splits words without expanding "*" against the workspace.
+        read -ra envs <<< "$ENVS"
+        if [ ${#envs[@]} -eq 0 ]; then
+          echo "::error::No environment supplied"
+          exit 1
+        fi
         ids=()
-        # One deployment per environment: webhooks-receiver validates a single env and rejects a
-        # combined string, so `dev prd` only works as two records.
-        for env in $ENVS; do
+        # webhooks-receiver rejects a combined string, so each env needs its own record.
+        for env in "${envs[@]}"; do
           case "$env" in
             dev|stg|prd|biz) ;;
             *) echo "::error::Invalid environment: $env"; exit 1 ;;
           esac
 
-          # task and payload are a contract with webhooks-receiver, which reads them off the
-          # deployment webhook to trigger the Pulumi pipeline. Do not reshape.
+          # task and payload are the webhooks-receiver contract - do not reshape.
           id=$(jq -n \
                 --arg ref "$GITHUB_REF" --arg env "$env" --arg sha "$GITHUB_SHA" \
                 --arg svc "$SERVICE_NAME" --arg img "$DOCKER_IMAGE" \
