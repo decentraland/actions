@@ -20,17 +20,17 @@ jobs:
     if: ${{ inputs.deployment-environment }}
     name: "Deploy to: ${{ inputs.deployment-environment }}"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
     steps:
-      # prd must run an immutable reference. A mutable tag (latest/next) can be repointed, or its
-      # digest GC'd out from under a running task (CannotPullContainerError). Block it on prd.
+      # contains(), not ==: env accepts space-separated values, so "dev prd" must still match.
       - name: Block mutable tags on prd
-        if: ${{ inputs.deployment-environment == 'prd' }}
+        if: ${{ contains(inputs.deployment-environment, 'prd') }}
         env:
           TAG: ${{ inputs.tag }}
         run: |
-          # Block latest/next, including a digest-pinned form (latest@sha256:…). A digest pin
-          # guarantees content but not persistence: once latest/next moves off that digest and no
-          # retained tag remains, Quay GC reaps it and prd fails to pull (CannotPullContainerError).
+          # latest@sha256:… blocked too - a digest pin guarantees content, not persistence.
           case "$TAG" in
             latest|next|latest@*|next@*)
               echo "::error::Refusing to deploy a mutable tag (latest/next) to prd. Pin an immutable version tag."
@@ -38,9 +38,9 @@ jobs:
           esac
       - name: Trigger deployment
         id: deploy
-        uses: decentraland/dcl-deploy-action@main
+        uses: decentraland/actions/deploy-service@main
         with:
-          dockerImage: "quay.io/decentraland/${{ inputs.service-name }}:${{ inputs.tag }}"
-          serviceName: ${{ inputs.service-name }}
+          docker-image: "quay.io/decentraland/${{ inputs.service-name }}:${{ inputs.tag }}"
+          service-name: ${{ inputs.service-name }}
           env: ${{ inputs.deployment-environment }}
           token: ${{ secrets.GITHUB_TOKEN }}

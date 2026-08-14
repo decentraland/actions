@@ -63,8 +63,7 @@ jobs:
         with:
           image: ${{ inputs.service-name }}
           layers: ${{ inputs.layers }}
-          # Re-tagging the SHA onto a release-built digest leaves the main build's digest untagged;
-          # Quay GC reaps it and tasks pinned to it fail with CannotPullContainerError.
+          # Re-tagging the SHA onto a release digest orphans the main build's; Quay GC reaps it -> CannotPullContainerError.
           tags: ${{ (github.event_name == 'release' || inputs.skip-commit-sha-tag) && inputs.docker-tag || format('{0} {1}', github.sha, inputs.docker-tag) }}
           dockerfiles: |
             ./Dockerfile
@@ -91,12 +90,15 @@ jobs:
     needs: [quay-build-push]
     name: "Deploy to: ${{ inputs.deployment-environment }}"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
     steps:
       - name: Trigger deployment
         id: deploy
-        uses: decentraland/dcl-deploy-action@main
+        uses: decentraland/actions/deploy-service@main
         with:
-          dockerImage: "${{ needs.quay-build-push.outputs.registry-path }}"
-          serviceName: ${{ inputs.service-name }}
+          docker-image: "${{ needs.quay-build-push.outputs.registry-path }}"
+          service-name: ${{ inputs.service-name }}
           env: ${{ inputs.deployment-environment }}
           token: ${{ secrets.GITHUB_TOKEN }}

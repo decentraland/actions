@@ -10,6 +10,9 @@ A collection of reusable GitHub Actions for Decentraland repositories.
   - [Usage](#usage)
   - [Setup](#setup)
   - [Testing](#testing)
+- [deploy-service](#deploy-service)
+  - [Inputs](#inputs)
+  - [Migrating from dcl-deploy-action](#migrating-from-dcl-deploy-action)
 
 ---
 
@@ -73,3 +76,49 @@ jobs:
 ### Testing
 
 For detailed testing instructions, see [scripts/ai_pr_reviewer/test/README.md](scripts/ai_pr_reviewer/test/README.md)
+
+---
+
+# deploy-service
+
+Creates the GitHub Deployment record that `webhooks-receiver` turns into a Pulumi deploy. Replaces the archived `decentraland/dcl-deploy-action`.
+
+```yaml
+      - uses: decentraland/actions/deploy-service@main
+        with:
+          service-name: my-service
+          docker-image: quay.io/decentraland/my-service:1.2.3
+          env: prd
+          token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+The calling job needs `permissions: { contents: read, deployments: write }`.
+
+## Inputs
+
+| Input | Required | Description |
+|-------|----------|-------------|
+| `service-name` | Yes | Name of the service to deploy |
+| `docker-image` | Yes | Full image reference, e.g. `quay.io/decentraland/my-service:1.2.3` |
+| `env` | Yes | Target environment: `dev`, `stg`, `prd` or `biz`. Accepts several, space separated (`dev prd`), which creates one deployment per environment |
+| `token` | Yes | GitHub token with `deployments: write` |
+
+| Output | Description |
+|--------|-------------|
+| `deployment-ids` | JSON array of the deployment ids created, one per environment |
+
+Prefer an immutable version tag in `docker-image` for `prd`. A mutable tag such as `latest` can be repointed, and once it moves off a digest Quay garbage-collects that digest, so a running task can fail to pull on its next placement.
+
+## Migrating from dcl-deploy-action
+
+Inputs were renamed to kebab-case, and there is a new output:
+
+| `dcl-deploy-action` | `deploy-service` |
+|---------------------|------------------|
+| `serviceName` | `service-name` |
+| `dockerImage` | `docker-image` |
+| `env` | `env` (unchanged) |
+| `token` | `token` (unchanged) |
+| — | `deployment-ids` (new) |
+
+Behaviour is otherwise unchanged: same `dcl/container-deployment` task, same payload, same environment allowlist, same one-deployment-per-environment split.
