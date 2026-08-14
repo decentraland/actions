@@ -1,0 +1,149 @@
+name: "Deploy static site to CDN"
+description: "Upload a pre-built site folder straight to S3 (via GitHub OIDC) and set the Cloudflare KV rollout, in a single step."
+branding:
+  icon: "upload-cloud"
+  color: "blue"
+
+inputs:
+  dist-path:
+    description: "Path to the pre-built site directory to upload (e.g. ./dist). The caller builds it. Required for a normal deploy; omit for a release copy (`version`) or a repoint."
+    required: false
+  source-version:
+    description: "Explicit version in S3 to copy FROM. Usually unnecessary: for a release (target `version` != the commit version) the action copies the commit's already-uploaded build by default. Set this to override that source."
+    required: false
+  commit:
+    description: "Commit sha to compute the version from (manual deploy by commit). Defaults to the workflow commit. Requires the repo checked out at that commit so the base version is read from package.json."
+    required: false
+  package-name:
+    description: "CDN prefix / S3 key root / KV record prefix. Defaults to `name` from the repo-root package.json."
+    required: false
+  deployment-path:
+    description: "Path-based KV key (e.g. `auth`). Defaults to the package name without its `@scope/` and trailing `-site`. Mutually exclusive with `domain`."
+    required: false
+  domain:
+    description: "Domain-based KV key (e.g. `play.decentraland.org`). Mutually exclusive with `deployment-path`."
+    required: false
+  deployment-environments:
+    description: "Environments to repoint, as a JSON array or comma list (e.g. '[\"zone\",\"today\"]'). Empty array '[]' stages the bytes in S3 without touching any KV. Defaults to zone + today."
+    required: false
+  deployment-environment:
+    description: "Single-environment shorthand for `deployment-environments` (e.g. `org`)."
+    required: false
+  force:
+    description: "Re-upload / re-copy the bytes even when the target version is already in S3."
+    required: false
+    default: "false"
+  deployment-name:
+    description: "Rollout name (key into the KV `records` map)."
+    required: false
+    default: "_site"
+  percentage:
+    description: "Rollout percentage (0-100) for the deployed version."
+    required: false
+    default: "100"
+  require-index:
+    description: "Fail a deploy when the folder has no index.html at its root (guards against an empty/broken build). Set to 'false' to deploy non-HTML asset bundles."
+    required: false
+    default: "true"
+  version:
+    description: "Target version. Defaults to a computed deterministic snapshot for a deploy. Provide it to deploy/redeploy under a specific version (e.g. a release tag), or alone (no `dist-path`/`source-version`) to repoint the KV at an already-uploaded version. Required when no `dist-path` is provided."
+    required: false
+  aws-region:
+    description: "AWS region for STS / S3."
+    required: false
+    default: "us-east-1"
+  aws-role-to-assume:
+    description: "IAM role ARN assumed via GitHub OIDC (no static AWS keys). Required for deploy and redeploy (anything that touches S3); unused for a pure repoint."
+    required: false
+  s3-bucket:
+    description: "Target CDN S3 bucket."
+    required: false
+    default: "cdn-decentraland-org-contentbucket-371d0b7"
+  cloudflare-account-id:
+    description: "Cloudflare account id for the KV REST API."
+    required: true
+  cloudflare-api-token:
+    description: "Cloudflare API token scoped to Workers KV Storage: Edit on the rollout namespaces. The single secret this action needs."
+    required: true
+  cloudflare-namespace-id:
+    description: "Explicit Cloudflare KV namespace id. Overrides the per-environment mapping below."
+    required: false
+  cloudflare-namespace-zone:
+    description: "Cloudflare KV namespace id for `zone` (dev). Supplied via the org secret CF_NS_ZONE by the reusable workflow."
+    required: false
+  cloudflare-namespace-today:
+    description: "Cloudflare KV namespace id for `today` (stg). Supplied via the org secret CF_NS_TODAY."
+    required: false
+  cloudflare-namespace-org:
+    description: "Cloudflare KV namespace id for `org` (prod). Supplied via the org secret CF_NS_ORG."
+    required: false
+  slack-webhook:
+    description: "Incoming Slack webhook URL for the `rollouts` channel. Skipped if unset."
+    required: false
+  create-github-deployment:
+    description: "Create a GitHub deployment + commit status for observability."
+    required: false
+    default: "true"
+  cdn-base-url:
+    description: "CDN origin used to compute the cdn-url output."
+    required: false
+    default: "https://cdn.decentraland.org"
+
+outputs:
+  version:
+    description: "The deployed version (computed snapshot, or the `version` input)."
+    value: ${{ steps.deploy.outputs.version }}
+  s3-path:
+    description: "The S3 key prefix that was uploaded: <package-name>/<version>."
+    value: ${{ steps.deploy.outputs.s3-path }}
+  cdn-url:
+    description: "<cdn-base-url>/<package-name>/<version> — where the worker serves the version from."
+    value: ${{ steps.deploy.outputs.cdn-url }}
+  mode:
+    description: "What the S3 step did: upload | copy | skip."
+    value: ${{ steps.deploy.outputs.mode }}
+
+runs:
+  using: "composite"
+  steps:
+    # Needed whenever the action may touch S3 (upload, copy, or the
+    # already-deployed? check). A pure repoint to the commit version — no folder,
+    # source, version, or force — writes just the KV pointer and needs no creds.
+    - name: Configure AWS credentials (OIDC)
+      if: ${{ inputs.dist-path != '' || inputs.source-version != '' || inputs.commit != '' || inputs.version != '' || inputs.force == 'true' }}
+      uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+      with:
+        role-to-assume: ${{ inputs.aws-role-to-assume }}
+        aws-region: ${{ inputs.aws-region }}
+        role-session-name: cdn-deploy-${{ github.run_id }}
+
+    - name: Deploy to CDN and set rollout
+      id: deploy
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/dist/index.js"
+      env:
+        INPUT_DIST-PATH: ${{ inputs.dist-path }}
+        INPUT_SOURCE-VERSION: ${{ inputs.source-version }}
+        INPUT_COMMIT: ${{ inputs.commit }}
+        INPUT_PACKAGE-NAME: ${{ inputs.package-name }}
+        INPUT_DEPLOYMENT-PATH: ${{ inputs.deployment-path }}
+        INPUT_DOMAIN: ${{ inputs.domain }}
+        INPUT_DEPLOYMENT-ENVIRONMENTS: ${{ inputs.deployment-environments }}
+        INPUT_DEPLOYMENT-ENVIRONMENT: ${{ inputs.deployment-environment }}
+        INPUT_DEPLOYMENT-NAME: ${{ inputs.deployment-name }}
+        INPUT_PERCENTAGE: ${{ inputs.percentage }}
+        INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}
+        INPUT_FORCE: ${{ inputs.force }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_AWS-REGION: ${{ inputs.aws-region }}
+        INPUT_S3-BUCKET: ${{ inputs.s3-bucket }}
+        INPUT_CLOUDFLARE-ACCOUNT-ID: ${{ inputs.cloudflare-account-id }}
+        INPUT_CLOUDFLARE-API-TOKEN: ${{ inputs.cloudflare-api-token }}
+        INPUT_CLOUDFLARE-NAMESPACE-ID: ${{ inputs.cloudflare-namespace-id }}
+        INPUT_CLOUDFLARE-NAMESPACE-ZONE: ${{ inputs.cloudflare-namespace-zone }}
+        INPUT_CLOUDFLARE-NAMESPACE-TODAY: ${{ inputs.cloudflare-namespace-today }}
+        INPUT_CLOUDFLARE-NAMESPACE-ORG: ${{ inputs.cloudflare-namespace-org }}
+        INPUT_SLACK-WEBHOOK: ${{ inputs.slack-webhook }}
+        INPUT_CREATE-GITHUB-DEPLOYMENT: ${{ inputs.create-github-deployment }}
+        INPUT_CDN-BASE-URL: ${{ inputs.cdn-base-url }}
+        GITHUB_TOKEN: ${{ github.token }}

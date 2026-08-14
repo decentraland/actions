@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "outDir": "lib",
+    "types": ["node", "jest"]
+  },
+  "include": ["src", "__tests__"]
+}
