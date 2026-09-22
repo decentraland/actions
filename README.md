@@ -13,6 +13,8 @@ A collection of reusable GitHub Actions for Decentraland repositories.
 - [deploy-service](#deploy-service)
   - [Inputs](#inputs)
   - [Migrating from dcl-deploy-action](#migrating-from-dcl-deploy-action)
+- [cdn-deploy](#cdn-deploy)
+  - [Inputs](#inputs-1)
 
 ---
 
@@ -122,3 +124,50 @@ Inputs were renamed to kebab-case, and there is a new output:
 | — | `deployment-ids` (new) |
 
 Behaviour is otherwise unchanged: same `dcl/container-deployment` task, same payload, same environment allowlist, same one-deployment-per-environment split.
+
+---
+
+# cdn-deploy
+
+Deploys a pre-built static site to the Decentraland CDN in one step: uploads the folder to S3 over GitHub OIDC, then patches the Cloudflare KV rollout record the CDN worker reads to pick a version. Replaces the `oddish-action` → `static-sites-pipeline` → `set-rollout-action` → `webhooks-receiver` relay.
+
+```yaml
+      - uses: actions/checkout@v4
+      - run: npm ci && npm run build # the site builds its own artifact
+      - uses: decentraland/actions/cdn-deploy@cdn-deploy-v1
+        with:
+          dist-path: ./dist
+          deployment-environments: '["zone","today"]'
+          aws-role-to-assume: ${{ vars.CDN_DEPLOY_ROLE_ARN }}
+          cloudflare-account-id: ${{ vars.CF_ACCOUNT_ID }}
+          cloudflare-api-token: ${{ secrets.CF_KV_API_TOKEN }}
+          cloudflare-namespace-zone: ${{ secrets.CF_NS_ZONE }}
+          cloudflare-namespace-today: ${{ secrets.CF_NS_TODAY }}
+```
+
+Unlike the rest of this repository, which is consumed from `@main`, `cdn-deploy` is consumed from the pinned major tag `@cdn-deploy-v1`: it runs from a committed bundle, and the release workflow only moves that tag onto a commit whose bundle matches its sources.
+
+The calling job needs `permissions: { id-token: write, contents: read, deployments: write, statuses: write }` — `id-token` for the AWS OIDC assume-role, `deployments` and `statuses` only while `create-github-deployment` is on. Give it a `concurrency` group too, so one deploy runs at a time per repository; the KV update is read-modify-write.
+
+## Inputs
+
+Most inputs are defaulted from the checked-out `package.json`. The ones a caller normally sets:
+
+| Input | Required | Description |
+|-------|----------|-------------|
+| `dist-path` | For an upload | Pre-built directory to upload, e.g. `./dist`. Omit for a release copy or a repoint |
+| `aws-role-to-assume` | Yes | IAM role ARN assumed via OIDC. Needed on every flow — each one reads S3 to check whether the target version is already deployed |
+| `cloudflare-account-id` | Unless stage-only | Cloudflare account id for the KV REST API |
+| `cloudflare-api-token` | Unless stage-only | Token scoped to Workers KV Storage: Edit on the rollout namespaces |
+| `cloudflare-namespace-zone` / `-today` / `-org` | Per targeted environment | KV namespace id for that environment, from the org secrets `CF_NS_ZONE` / `CF_NS_TODAY` / `CF_NS_ORG` |
+| `deployment-environments` | No | Environments to repoint, `zone,today` by default. `'[]'` stages the bytes in S3 without touching any KV |
+| `version` | No | Target version. Defaults to `<package.json version>-commit-<shortSha>` |
+
+| Output | Description |
+|--------|-------------|
+| `version` | The deployed version |
+| `s3-path` | The S3 key prefix that was written: `<package-name>/<version>` |
+| `cdn-url` | Where the worker serves that version from |
+| `mode` | What the S3 step did: `upload`, `copy` or `skip` |
+
+See [cdn-deploy/README.md](cdn-deploy/README.md) for the full input list, the state table that decides upload vs copy vs skip, and the push / release / manual-deploy flows.
