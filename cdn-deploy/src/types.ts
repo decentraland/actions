@@ -7,9 +7,7 @@ export type Environment = "zone" | "today" | "org";
  * domain. The environment(s) select which Cloudflare KV namespace(s) receive
  * the write.
  */
-export type DeploymentTarget =
-  | { kind: "path"; path: string }
-  | { kind: "domain"; domain: string };
+export type DeploymentTarget = { kind: "path"; path: string } | { kind: "domain"; domain: string };
 
 /** Per-environment Cloudflare KV namespace ids (the `CF_ROLLOUTS__*_NAMESPACE` values). */
 export type NamespaceMap = {
@@ -45,7 +43,7 @@ export type ActionInputs = {
   percentage: number;
   /** Explicit target version (e.g. a release tag). Defaults to the commit version. */
   version?: string;
-  /** Explicit version to copy from; otherwise the commit version is used for a release. */
+  /** Explicit version to copy from. Outranks everything but an already-present target. */
   sourceVersion?: string;
   /** Commit sha to compute the version from (manual deploy by commit). Defaults to GITHUB_SHA. */
   commit?: string;
@@ -53,6 +51,12 @@ export type ActionInputs = {
   requireIndex: boolean;
   /** Redo the S3 upload/copy even when the target bytes are already present. */
   force: boolean;
+  /**
+   * Opt in to the release copy: when the target `version` is absent from S3,
+   * fill it from the current commit's already-uploaded build. Off by default so
+   * a `version` that is merely absent fails instead of being silently filled.
+   */
+  copyFromCommit: boolean;
   awsRegion: string;
   s3Bucket: string;
   cloudflareAccountId: string;

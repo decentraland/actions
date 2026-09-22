@@ -3,11 +3,11 @@ import * as github from "@actions/github";
 import { folderHasIndexHtml, kvKeyForTarget, readInputs, rolloutUrlForTarget } from "./inputs";
 import { computeVersion } from "./version";
 import { resolveEnsurePlan } from "./plan";
-import { copyFolderInS3, objectExists, uploadFolderToS3 } from "./s3";
+import { copyFolderInS3, prefixExists, uploadFolderToS3 } from "./s3";
 import { patchRolloutInEnvironments } from "./cloudflare";
 import { notifyRollout } from "./slack";
 import { createObservability } from "./github";
-import { S3Action } from "./types";
+import { Environment, S3Action } from "./types";
 
 async function run(): Promise<void> {
   const inputs = readInputs();
@@ -38,52 +38,55 @@ async function run(): Promise<void> {
   const observability = createObservability({
     enabled: inputs.createGithubDeployment,
     token: process.env.GITHUB_TOKEN,
-    environment: envs.join("+") || "stage",
+    environments: envs,
     packageName,
     version: targetVersion,
     cdnUrl,
+    sha,
   });
   await observability.start();
 
   let s3Action: S3Action = "skip";
   try {
-    // 1) Ensure the target bytes are in S3 (state-aware). Skipped entirely for a
-    //    pure repoint (target named by the commit, no folder/source/force).
-    const needsS3 =
-      !!inputs.distPath ||
-      !!inputs.sourceVersion ||
-      !!inputs.commit ||
-      inputs.force ||
-      targetVersion !== commitVersion;
+    // 1) Ensure the target bytes are in S3 (state-aware).
+    //
+    // This runs on EVERY path, including a repoint that uploads nothing: the
+    // point of the check is that the KV must never be pointed at a prefix that
+    // isn't there. `resolveEnsurePlan` throws when the target is absent and
+    // there is nothing legitimate to fill it with.
+    if (inputs.distPath && inputs.requireIndex && !folderHasIndexHtml(inputs.distPath)) {
+      throw new Error(
+        `No index.html found at the root of "${inputs.distPath}". The build looks empty or ` +
+          "misconfigured. Set `require-index: false` to deploy anyway.",
+      );
+    }
 
-    if (needsS3) {
-      if (inputs.distPath && inputs.requireIndex && !folderHasIndexHtml(inputs.distPath)) {
-        throw new Error(
-          `No index.html found at the root of "${inputs.distPath}". The build looks empty or ` +
-            "misconfigured. Set `require-index: false` to deploy anyway."
-        );
-      }
+    const targetExists = await prefixExists({
+      region: inputs.awsRegion,
+      bucket: inputs.s3Bucket,
+      prefix: remoteFolder,
+    });
+    const plan = resolveEnsurePlan({
+      folderPresent: !!inputs.distPath,
+      sourceVersion: inputs.sourceVersion,
+      targetVersion,
+      commitVersion,
+      targetExists,
+      force: inputs.force,
+      copyFromCommit: inputs.copyFromCommit,
+    });
+    s3Action = plan.s3;
+    // Published before the KV work so a failure downstream still tells a
+    // subsequent `if: always()` step whether the bytes were written.
+    core.setOutput("mode", s3Action);
 
-      const targetExists = await objectExists({
-        region: inputs.awsRegion,
-        bucket: inputs.s3Bucket,
-        key: `${remoteFolder}/index.html`,
-      });
-      const plan = resolveEnsurePlan({
-        folderPresent: !!inputs.distPath,
-        sourceVersion: inputs.sourceVersion,
-        targetVersion,
-        commitVersion,
-        targetExists,
-        force: inputs.force,
-      });
-      s3Action = plan.s3;
-
-      if (plan.s3 === "skip") {
-        core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
-      } else if (plan.s3 === "copy") {
-        const sourceFolder = `${packageName}/${plan.source}`;
-        await core.group(`Copying s3://${inputs.s3Bucket}/${sourceFolder} -> ${remoteFolder}`, async () => {
+    if (plan.s3 === "skip") {
+      core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
+    } else if (plan.s3 === "copy") {
+      const sourceFolder = `${packageName}/${plan.source}`;
+      await core.group(
+        `Copying s3://${inputs.s3Bucket}/${sourceFolder} -> ${remoteFolder}`,
+        async () => {
           const copied = await copyFolderInS3({
             region: inputs.awsRegion,
             bucket: inputs.s3Bucket,
@@ -91,63 +94,73 @@ async function run(): Promise<void> {
             targetFolder: remoteFolder,
           });
           core.info(`Copied ${copied} objects.`);
-        });
-      } else {
-        await core.group(`Uploading ${inputs.distPath} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
+        },
+      );
+    } else {
+      await core.group(
+        `Uploading ${inputs.distPath} -> s3://${inputs.s3Bucket}/${remoteFolder}`,
+        async () => {
           const uploaded = await uploadFolderToS3({
             region: inputs.awsRegion,
             bucket: inputs.s3Bucket,
             folder: inputs.distPath,
             remoteFolder,
           });
-          core.info(`Uploaded ${uploaded.length} files.`);
-        });
-      }
-    } else {
-      core.info("> Repoint only — no S3 operation.");
+          // uploadDir resolves to [] for an empty folder rather than throwing;
+          // repointing the KV at nothing would take the site down.
+          if (uploaded.length === 0) {
+            throw new Error(
+              `Nothing was uploaded from "${inputs.distPath}" — the folder is empty. Check that ` +
+                "the build ran and produced output.",
+            );
+          }
+          core.info(`Uploaded ${uploaded.length} objects.`);
+        },
+      );
     }
 
     // 2) KV: repoint each environment, or stage (empty list -> no KV).
     if (envs.length === 0) {
       core.info("> Stage only: bytes are in S3, KV left unchanged.");
     } else {
-      await core.group(`Setting rollout "${inputs.deploymentName}" on "${key}" for ${envs.join(", ")}`, async () => {
-        await patchRolloutInEnvironments(
-          { accountId: inputs.cloudflareAccountId, apiToken: inputs.cloudflareApiToken },
-          inputs.kvTargets,
-          {
-            key,
-            rolloutName: inputs.deploymentName,
-            percentage: inputs.percentage,
-            prefix: packageName,
-            version: targetVersion,
-            timestamp: Date.now(),
-          }
-        );
-        core.info(`Repointed ${envs.join(", ")} -> ${targetVersion} @ ${inputs.percentage}%`);
-      });
-
-      // 3) Slack (non-fatal), one message per repointed environment.
-      if (inputs.slackWebhook) {
-        for (const env of envs) {
-          try {
-            await notifyRollout({
-              webhookUrl: inputs.slackWebhook,
-              url: rolloutUrlForTarget(inputs.target, env),
+      await core.group(
+        `Setting rollout "${inputs.deploymentName}" on "${key}" for ${envs.join(", ")}`,
+        async () => {
+          await patchRolloutInEnvironments(
+            {
+              accountId: inputs.cloudflareAccountId,
+              apiToken: inputs.cloudflareApiToken,
+              onRetry: (message) => core.warning(message),
+            },
+            inputs.kvTargets,
+            {
+              key,
               rolloutName: inputs.deploymentName,
               percentage: inputs.percentage,
               prefix: packageName,
               version: targetVersion,
-            });
-          } catch (e) {
-            core.warning(`Slack notification failed: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
-      }
+              timestamp: Date.now(),
+            },
+          );
+          core.info(`Repointed ${envs.join(", ")} -> ${targetVersion} @ ${inputs.percentage}%`);
+        },
+      );
+
+      // 3) Slack (non-fatal), one message per repointed environment.
+      await notifyEnvironments(inputs, envs, targetVersion, packageName);
     }
 
-    core.setOutput("mode", s3Action);
     await observability.succeed();
+    core.info(
+      `✅ ${s3Action} ${packageName}@${targetVersion}` +
+        (envs.length ? ` -> ${envs.join(", ")}` : " (staged, no KV)"),
+    );
+  } catch (e) {
+    await observability.fail();
+    throw e;
+  } finally {
+    // Written even on failure: a half-applied deploy is exactly when someone
+    // needs to see what the S3 step did.
     await writeSummary({
       s3Action,
       packageName,
@@ -156,13 +169,36 @@ async function run(): Promise<void> {
       percentage: inputs.percentage,
       cdnUrl,
     });
-    core.info(
-      `✅ ${s3Action} ${packageName}@${targetVersion}` +
-        (envs.length ? ` -> ${envs.join(", ")}` : " (staged, no KV)")
-    );
-  } catch (e) {
-    await observability.fail();
-    throw e;
+  }
+}
+
+/** Slack is observability, never a reason to fail a deploy that already landed. */
+async function notifyEnvironments(
+  inputs: {
+    slackWebhook?: string;
+    target: Parameters<typeof rolloutUrlForTarget>[0];
+    deploymentName: string;
+    percentage: number;
+  },
+  envs: Environment[],
+  version: string,
+  packageName: string,
+): Promise<void> {
+  if (!inputs.slackWebhook) return;
+  for (const env of envs) {
+    try {
+      await notifyRollout({
+        webhookUrl: inputs.slackWebhook,
+        url: rolloutUrlForTarget(inputs.target, env),
+        rolloutName: inputs.deploymentName,
+        percentage: inputs.percentage,
+        prefix: packageName,
+        version,
+        onRetry: (message) => core.warning(message),
+      });
+    } catch (e) {
+      core.warning(`Slack notification failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }
 
@@ -202,3 +238,5 @@ async function writeSummary(s: {
 run().catch((e) => {
   core.setFailed(e instanceof Error ? e.message : String(e));
 });
+
+export { run };

@@ -11,20 +11,21 @@ import { uploadDir } from "@dcl/cdn-uploader";
  * `aws-actions/configure-aws-credentials` (`AWS_ACCESS_KEY_ID`,
  * `AWS_SECRET_ACCESS_KEY` and crucially `AWS_SESSION_TOKEN` for OIDC temp
  * creds). Passing partial explicit creds would bypass the session token.
+ *
+ * Returns the uploaded object keys. Note these are OBJECTS, not source files:
+ * the uploader writes up to three per compressible file (`f`, `f.gzip`, `f.br`).
  */
 export async function uploadFolderToS3(opts: {
   region: string;
   bucket: string;
   folder: string;
   remoteFolder: string;
-  dryRun?: boolean;
   s3?: AWS.S3;
 }): Promise<string[]> {
   const s3 = opts.s3 || new AWS.S3({ region: opts.region });
   return uploadDir(s3, opts.bucket, opts.folder, opts.remoteFolder, {
     immutable: true,
     concurrency: 10,
-    dryRun: opts.dryRun,
   });
 }
 
@@ -34,27 +35,28 @@ function asPrefix(folder: string): string {
 }
 
 /**
- * Does an S3 object exist? Used as the "is this version already deployed?"
- * signal (we check `<dir>/index.html`). A 404 / NotFound maps to `false`; other
- * errors (auth, network) propagate so we don't silently treat them as "absent".
+ * Is anything stored under this prefix? This is the "is this version already
+ * deployed?" signal.
+ *
+ * A prefix listing rather than a HEAD on `<dir>/index.html` on purpose:
+ * `require-index: false` deploys (non-HTML asset bundles) have no index.html,
+ * so a HEAD probe could never report them as present — they would re-upload on
+ * every run and, worse, every by-version repoint would look like an empty
+ * target. `listObjectsV2` also answers honestly for a caller that lacks
+ * `s3:GetObject` on a missing key, where S3 returns 403 rather than 404 to a
+ * HEAD. It needs `s3:ListBucket`, which the copy path already requires.
  */
-export async function objectExists(opts: {
+export async function prefixExists(opts: {
   region: string;
   bucket: string;
-  key: string;
+  prefix: string;
   s3?: AWS.S3;
 }): Promise<boolean> {
   const s3 = opts.s3 || new AWS.S3({ region: opts.region });
-  try {
-    await s3.headObject({ Bucket: opts.bucket, Key: opts.key }).promise();
-    return true;
-  } catch (e) {
-    const err = e as { statusCode?: number; code?: string };
-    if (err && (err.statusCode === 404 || err.code === "NotFound" || err.code === "NoSuchKey")) {
-      return false;
-    }
-    throw e;
-  }
+  const listed = await s3
+    .listObjectsV2({ Bucket: opts.bucket, Prefix: asPrefix(opts.prefix), MaxKeys: 1 })
+    .promise();
+  return (listed.KeyCount || 0) > 0;
 }
 
 /**
@@ -112,7 +114,7 @@ export async function copyFolderInS3(opts: {
               ACL: "public-read",
             })
             .promise();
-        })
+        }),
       );
       copied += batch.length;
     }

@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
+import { Environment } from "./types";
 
 /**
  * Commit-status context kept identical to `static-sites-pipeline` so any repo
@@ -21,6 +22,20 @@ const NOOP: Observability = {
 };
 
 /**
+ * The commit a status belongs on.
+ *
+ * On a `pull_request` event `GITHUB_SHA` is the ephemeral `refs/pull/N/merge`
+ * commit, and a status posted there never shows up on the PR — a repo that made
+ * `cdn-rollout/upload` a required check would wait on it forever. The PR head is
+ * the commit a reviewer is actually looking at.
+ */
+export function statusSha(context: typeof github.context = github.context): string {
+  const prHead = (context.payload as { pull_request?: { head?: { sha?: string } } })?.pull_request
+    ?.head?.sha;
+  return prHead || context.sha;
+}
+
+/**
  * GitHub deployment + commit status for visibility. Entirely best-effort: every
  * call is wrapped so an observability failure never breaks a deploy. Returns a
  * no-op when disabled or when no token/context is available (e.g. forks).
@@ -28,10 +43,13 @@ const NOOP: Observability = {
 export function createObservability(opts: {
   enabled: boolean;
   token?: string;
-  environment: string;
+  /** Environments being repointed; empty for a stage-only run. */
+  environments: Environment[];
   packageName: string;
   version: string;
   cdnUrl: string;
+  /** The commit actually being deployed — may differ from the workflow's sha. */
+  sha?: string;
 }): Observability {
   if (!opts.enabled || !opts.token) return NOOP;
 
@@ -43,7 +61,12 @@ export function createObservability(opts: {
   }
 
   const { owner, repo } = github.context.repo;
-  const sha = github.context.sha;
+  // The deployment records the commit whose build is going live; the status has
+  // to land somewhere a reviewer sees it.
+  const deploySha = opts.sha || github.context.sha;
+  const sha = opts.sha || statusSha();
+  const environmentName = opts.environments.join("+") || "stage";
+  const isProduction = opts.environments.includes("org");
   const logUrl = `${github.context.serverUrl}/${owner}/${repo}/actions/runs/${github.context.runId}`;
   let deploymentId: number | undefined;
 
@@ -65,7 +88,7 @@ export function createObservability(opts: {
         state,
         description: description.slice(0, 140),
         target_url: logUrl,
-      })
+      }),
     );
   }
 
@@ -79,7 +102,7 @@ export function createObservability(opts: {
         state,
         log_url: logUrl,
         environment_url: opts.cdnUrl,
-      })
+      }),
     );
   }
 
@@ -89,27 +112,27 @@ export function createObservability(opts: {
         const created = await octokit.rest.repos.createDeployment({
           owner,
           repo,
-          ref: sha,
+          ref: deploySha,
           task: DEPLOYMENT_TASK,
-          environment: opts.environment,
+          environment: environmentName,
           description: `Deploy ${opts.packageName}@${opts.version} to CDN`,
           auto_merge: false,
           required_contexts: [],
           transient_environment: false,
-          production_environment: opts.environment === "org",
+          production_environment: isProduction,
           payload: {
             packageName: opts.packageName,
             version: opts.version,
             url: opts.cdnUrl,
           } as never,
         });
-        // 201 -> deployment; 202 -> merged/pending (no id we can act on).
         const data = created.data as { id?: number };
         if (data && typeof data.id === "number") deploymentId = data.id;
       });
       if (!deploymentId) {
         core.warning(
-          "GitHub deployment id unavailable (e.g. a 202 response) — deployment status won't be recorded."
+          "GitHub deployment could not be created — deployment status won't be recorded. The " +
+            "usual cause is a job without `permissions: { deployments: write }`.",
         );
       }
       await deploymentStatus("in_progress");
