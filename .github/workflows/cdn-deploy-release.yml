@@ -4,7 +4,9 @@
 #
 #   git tag cdn-deploy-v1.2.3 && git push origin cdn-deploy-v1.2.3
 #
-# Ensure dist/ is rebuilt and committed before tagging (see cdn-deploy/README.md).
+# Before the major tag moves, the job re-runs the tests and rebuilds the bundle,
+# and refuses to bless a commit whose dist/ does not match its src/ — the major
+# tag is what every consumer executes, so it must never point at a stale bundle.
 
 name: cdn-deploy release
 
@@ -14,21 +16,89 @@ on:
       - "cdn-deploy-v*.*.*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: cdn-deploy-release
+  cancel-in-progress: false
 
 jobs:
   retag-major:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
         with:
           fetch-depth: 0
-      - name: Move the major tag to this release
+
+      # A prerelease (cdn-deploy-v1.2.3-rc.1) still matches the trigger glob, but
+      # must never take over the stable major tag. Skip rather than fail, so an
+      # intentional RC push doesn't show up as a red run.
+      - name: Is this a stable release?
+        id: guard
         env:
-          FULL_TAG: ${{ github.ref_name }} # e.g. cdn-deploy-v1.2.3
+          FULL_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "${FULL_TAG}" =~ ^cdn-deploy-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${FULL_TAG} is a prerelease or non-standard tag — leaving the major tag where it is."
+          fi
+
+      - name: Require the tag to be on main
+        if: steps.guard.outputs.stable == 'true'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::This tag is not an ancestor of origin/main. Release from merged code only." >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        if: steps.guard.outputs.stable == 'true'
+        with:
+          node-version-file: cdn-deploy/.nvmrc
+          cache: npm
+          cache-dependency-path: cdn-deploy/package-lock.json
+
+      - name: Verify the bundle matches the sources
+        if: steps.guard.outputs.stable == 'true'
+        working-directory: cdn-deploy
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+          if ! git diff --exit-code -- dist; then
+            echo "::error::cdn-deploy/dist does not match src/ at this tag. Rebuild, commit, and re-tag." >&2
+            exit 1
+          fi
+
+      - name: Move the major tag to this release
+        if: steps.guard.outputs.stable == 'true'
+        env:
+          FULL_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           major="${FULL_TAG%%.*}"          # cdn-deploy-v1
-          echo "Pinning ${major} -> ${FULL_TAG} (${GITHUB_SHA})"
-          git tag -f "${major}" "${GITHUB_SHA}"
+          # Resolve to a commit: an annotated tag's ref is the tag object, and a
+          # major tag must point at a commit.
+          commit="$(git rev-parse "${FULL_TAG}^{commit}")"
+
+          # Never move the major tag backwards onto older code.
+          if git rev-parse -q --verify "refs/tags/${major}" >/dev/null; then
+            current="$(git rev-parse "${major}^{commit}")"
+            if ! git merge-base --is-ancestor "${current}" "${commit}"; then
+              echo "::error::${major} currently points at ${current}, which is not an ancestor of ${commit}. Refusing to move it backwards." >&2
+              exit 1
+            fi
+          fi
+
+          echo "Pinning ${major} -> ${FULL_TAG} (${commit})"
+          git tag -f "${major}" "${commit}"
           git push -f origin "refs/tags/${major}"

@@ -1,0 +1,65 @@
+# CI for the cdn-deploy action.
+#
+# The action runs from the committed `cdn-deploy/dist/index.js` bundle, so the
+# thing consumers execute is the bundle, not `src/`. The dist check below is the
+# point of this workflow: a PR that edits `src/` without rebuilding would
+# otherwise merge green and leave the action running the old code.
+
+name: cdn-deploy CI
+
+on:
+  pull_request:
+    paths:
+      - "cdn-deploy/**"
+      - ".github/workflows/cdn-deploy-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cdn-deploy/**"
+      - ".github/workflows/cdn-deploy-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cdn-deploy-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: cdn-deploy
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: cdn-deploy/.nvmrc
+          cache: npm
+          cache-dependency-path: cdn-deploy/package-lock.json
+
+      - run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Test
+        run: npm run test:coverage
+
+      - name: Rebuild the bundle
+        run: npm run build
+
+      - name: Fail if dist/ is stale
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- dist; then
+            echo "::error::cdn-deploy/dist is out of date. Run 'npm run build' in cdn-deploy/ and commit the result." >&2
+            exit 1
+          fi
+          echo "dist/ matches src/."

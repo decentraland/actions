@@ -1,11 +1,21 @@
 version: 2
 updates:
-  # npm dependencies of the cdn-deploy action (incl. the committed bundle's deps).
+  # npm dependencies of the cdn-deploy action.
+  #
+  # NOTE: these deps are vendored into the committed `cdn-deploy/dist/index.js`,
+  # so a merged bump only takes effect once the bundle is rebuilt. The CI job
+  # (.github/workflows/cdn-deploy-ci.yml) fails a stale dist/, so every one of
+  # these PRs goes red until someone runs `npm run build` and commits — which is
+  # the intended prompt, not a nuisance. Grouped to keep that to one rebuild.
   - package-ecosystem: npm
     directory: /cdn-deploy
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    groups:
+      cdn-deploy-production:
+        dependency-type: production
+      cdn-deploy-development:
+        dependency-type: development
     # `chore:` so PR titles pass this repo's validate-pr-title check.
     commit-message:
       prefix: chore
@@ -15,6 +25,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      workflow-actions:
+        patterns:
+          - "*"
     commit-message:
       prefix: chore
 
