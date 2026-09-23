@@ -129,39 +129,41 @@ export function createCloudflareKV(opts: {
  *
  * A missing key, a malformed value, or a stored `null` must not surface as a
  * context-free `SyntaxError` / `Cannot read properties of null` halfway through
- * a deploy — the message has to name the key so an operator can go fix it.
+ * a deploy — the message has to say which environment and key so an operator
+ * can go fix it. Namespace ids are masked in the log, so the caller passes a
+ * readable label rather than the id.
  */
 export function parseRolloutValue(
   current: string | null,
-  context: { key: string; namespaceId: string },
+  context: { label: string },
 ): Partial<RolloutDomain> {
-  if (current === null) return { records: {} };
+  if (current === null || current.trim() === "") return { records: {} };
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(current);
   } catch (e) {
     throw new Error(
-      `Cloudflare KV value for "${context.key}" (namespace ${context.namespaceId}) is not valid ` +
-        `JSON: ${e instanceof Error ? e.message : String(e)}`,
+      `Cloudflare KV value for "${context.label}" is not valid JSON: ` +
+        `${e instanceof Error ? e.message : String(e)}`,
     );
   }
 
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(
-      `Cloudflare KV value for "${context.key}" (namespace ${context.namespaceId}) is not a ` +
-        "rollout object.",
-    );
+    throw new Error(`Cloudflare KV value for "${context.label}" is not a rollout object.`);
   }
 
   const domain = parsed as Partial<RolloutDomain>;
   if (
     domain.records !== undefined &&
-    (typeof domain.records !== "object" || domain.records === null)
+    (typeof domain.records !== "object" || domain.records === null || Array.isArray(domain.records))
   ) {
+    // An array is the dangerous shape: `patchRollouts` would assign a
+    // non-index property that JSON.stringify drops, so the write would look
+    // like it succeeded while silently discarding every rollout record.
     throw new Error(
-      `Cloudflare KV value for "${context.key}" (namespace ${context.namespaceId}) has a ` +
-        "`records` field that is not an object.",
+      `Cloudflare KV value for "${context.label}" has a \`records\` field that is not an ` +
+        "object.",
     );
   }
   return domain.records ? domain : { ...domain, records: {} };
@@ -187,12 +189,13 @@ export async function patchRolloutInKV(
     prefix: string;
     version: string;
     timestamp: number;
-    namespaceId?: string;
+    /** Environment name, for error messages. Namespace ids are log-masked. */
+    environment?: string;
   },
 ): Promise<RolloutDomain> {
-  const namespaceId = params.namespaceId || "(unknown)";
+  const label = params.environment ? `${params.key}" in "${params.environment}` : params.key;
   const current = await kv.get(params.key);
-  const currentValues = parseRolloutValue(current, { key: params.key, namespaceId });
+  const currentValues = parseRolloutValue(current, { label });
 
   let newValues: RolloutDomain;
   try {
@@ -204,7 +207,7 @@ export async function patchRolloutInKV(
     ) as RolloutDomain;
   } catch (e) {
     throw new Error(
-      `Could not merge the rollout into "${params.key}" (namespace ${namespaceId}): ` +
+      `Could not merge the rollout into "${label}": ` +
         `${e instanceof Error ? e.message : String(e)}. An existing record with a non-semver ` +
         "version will do this — inspect the stored value.",
     );
@@ -256,7 +259,7 @@ export async function patchRolloutInEnvironments(
         sleep: account.sleep,
         onRetry: account.onRetry,
       });
-      await patchRolloutInKV(kv, { ...params, namespaceId });
+      await patchRolloutInKV(kv, { ...params, environment });
       succeeded.push(environment);
     } catch (e) {
       failures.push({ environment, error: e instanceof Error ? e.message : String(e) });

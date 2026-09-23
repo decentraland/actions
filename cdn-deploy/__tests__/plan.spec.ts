@@ -7,6 +7,10 @@ const RELEASE_VERSION = "1.2.3";
 const OTHER_VERSION = "0.9.0-commit-old1234";
 const SELF_COPY_ERROR = "a version cannot be copied onto itself";
 const NOTHING_TO_POPULATE_ERROR = "is not in S3 and there is nothing to populate it with";
+// `force` carries us past the "already present" branch, so the target IS in
+// S3 — the message must not send an operator hunting for a missing prefix.
+const FORCED_NOTHING_TO_REDO_ERROR =
+  "is already in S3, but `force` was set and there is nothing to re-populate it with";
 
 describe("when resolving the S3 ensure plan", () => {
   describe("and the target version is already present in S3", () => {
@@ -183,7 +187,7 @@ describe("when resolving the S3 ensure plan", () => {
         });
 
         it("should throw an error naming the target version and the ways to populate it", () => {
-          expect(() => resolveEnsurePlan(opts)).toThrow(NOTHING_TO_POPULATE_ERROR);
+          expect(() => resolveEnsurePlan(opts)).toThrow(FORCED_NOTHING_TO_REDO_ERROR);
         });
       });
     });

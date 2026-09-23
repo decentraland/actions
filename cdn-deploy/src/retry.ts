@@ -5,6 +5,11 @@ const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve,
 
 /** A transient failure worth retrying: a network error, a 429, or any 5xx. */
 export function isRetryable(e: unknown): boolean {
+  // A bug in the callback is not a transient failure: retrying it just repeats
+  // the same stack trace and buries the real cause under "retrying" warnings.
+  if (e instanceof TypeError || e instanceof ReferenceError || e instanceof SyntaxError) {
+    return false;
+  }
   const status = (e as { status?: number } | undefined)?.status;
   if (typeof status === "number") return status === 429 || status >= 500;
   // No status at all means it never got a response — DNS, TLS, connection reset.
@@ -31,7 +36,7 @@ export async function withRetry<T>(
     onRetry?: (m: string) => void;
   } = {},
 ): Promise<T> {
-  const attempts = opts.attempts ?? 3;
+  const attempts = Math.max(1, opts.attempts ?? 3);
   const baseDelayMs = opts.baseDelayMs ?? 500;
   const sleep = opts.sleep ?? defaultSleep;
 

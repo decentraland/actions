@@ -190,8 +190,16 @@ describe("when validating a package name", () => {
   });
 
   describe("and the name contains uppercase characters", () => {
-    it("should return the name unchanged", () => {
-      expect(validatePackageName("Explorer")).toBe("Explorer");
+    // S3 keys are case-sensitive, so an upper-case name deploys to a prefix
+    // the worker never serves and prefixExists can never match.
+    it("should reject it", () => {
+      expect(() => validatePackageName("Explorer")).toThrow("Invalid package name");
+    });
+  });
+
+  describe("and the name is longer than npm allows", () => {
+    it("should reject it", () => {
+      expect(() => validatePackageName("a".repeat(215))).toThrow("npm caps names at 214");
     });
   });
 
@@ -311,7 +319,7 @@ describe("when validating the dist path", () => {
     });
 
     it("should throw saying the path resolves outside the workspace", () => {
-      expect(() => validateDistPath(outside, workspace)).toThrow("resolves outside the workspace");
+      expect(() => validateDistPath(outside, workspace)).toThrow("outside the workspace");
     });
   });
 
@@ -323,7 +331,7 @@ describe("when validating the dist path", () => {
     });
 
     it("should throw saying the path resolves outside the workspace", () => {
-      expect(() => validateDistPath(distPath, workspace)).toThrow("resolves outside the workspace");
+      expect(() => validateDistPath(distPath, workspace)).toThrow("outside the workspace");
     });
   });
 
@@ -356,14 +364,32 @@ describe("when validating the dist path", () => {
 
   describe("and no workspace is configured", () => {
     let distPath: string;
+    let originalCwd: string;
 
     beforeEach(() => {
       distPath = path.join(workspace, "dist");
       fs.mkdirSync(distPath);
+      originalCwd = process.cwd();
+      process.chdir(workspace);
     });
 
-    it("should skip the workspace containment checks and return the path", () => {
-      expect(validateDistPath(distPath)).toBe(distPath);
+    afterEach(() => {
+      process.chdir(originalCwd);
+    });
+
+    // Failing open here would drop the containment guard entirely on a runner
+    // that does not set GITHUB_WORKSPACE, so it falls back to the cwd.
+    it("should fall back to the working directory and accept a folder inside it", () => {
+      expect(validateDistPath(distPath, undefined)).toBe(distPath);
+    });
+
+    it("should still reject a folder outside the working directory", () => {
+      const outside = makeTempDir("cdn-no-ws-");
+      try {
+        expect(() => validateDistPath(outside, undefined)).toThrow("outside the workspace");
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
     });
   });
 });
@@ -558,10 +584,21 @@ describe("when resolving KV targets", () => {
   });
 
   describe("and an override is combined with several environments", () => {
-    it("should throw because every environment would be written to the same namespace", () => {
-      expect(() => resolveKvTargets(["zone", "today"], {}, "ns-override")).toThrow(
-        "`cloudflare-namespace-id` maps every environment to one namespace",
-      );
+    // Writing the same record to the same namespace twice is idempotent but
+    // pointless, so the duplicate is collapsed rather than rejected.
+    it("should write the shared namespace only once", () => {
+      expect(resolveKvTargets(["zone", "today"], {}, "ns-override")).toEqual([
+        { environment: "zone", namespaceId: "ns-override" },
+      ]);
+    });
+  });
+
+  describe("and two environments resolve to different namespaces", () => {
+    it("should keep both", () => {
+      expect(resolveKvTargets(["zone", "today"], { zone: "ns-a", today: "ns-b" })).toEqual([
+        { environment: "zone", namespaceId: "ns-a" },
+        { environment: "today", namespaceId: "ns-b" },
+      ]);
     });
   });
 });
@@ -1104,10 +1141,14 @@ describe("when reading the action inputs", () => {
       setInputs({ "cloudflare-namespace-id": "ns-override" });
     });
 
-    it("should throw because both environments would be written to the same namespace", () => {
-      expect(() => readInputs()).toThrow(
-        "`cloudflare-namespace-id` maps every environment to one namespace",
-      );
+    // A single-namespace account is a legitimate setup; the duplicate write is
+    // collapsed rather than rejected.
+    it("should collapse the default environments onto the one namespace", () => {
+      expect(readInputs().kvTargets).toEqual([{ environment: "zone", namespaceId: "ns-override" }]);
+    });
+
+    it("should still report both environments for the rollout", () => {
+      expect(readInputs().environments).toEqual(["zone", "today"]);
     });
   });
 

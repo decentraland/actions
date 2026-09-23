@@ -23,11 +23,11 @@ There are no explicit "modes". The action figures out the S3 work from whether t
 | `force: true`                                                           | redo the upload/copy (same precedence)                      | repoint                    |
 | `deployment-environments: '[]'`                                         | upload/copy/skip as above                                   | **nothing** — stage only   |
 
-The precedence is the order of that table: an already-populated target wins (unless `force`), then an explicit `source-version` (the caller named the bytes), then a `dist-path` (a folder the caller built beats the implicit commit source), then the opt-in commit copy.
+The precedence is the order of the first five rows (`force` and `deployment-environments` are modifiers, not steps): an already-populated target wins (unless `force`), then an explicit `source-version` (the caller named the bytes), then a `dist-path` (a folder the caller built beats the implicit commit source), then the opt-in commit copy.
 
 **Filling an absent target is opt-in.** "Repoint at version X" and "release-copy into version X" are the same input shape (`version` set, no folder), so a `version` that is merely absent — a typo, an expired prefix — is an error rather than being silently filled with whatever the current commit built and then served. Set `copy-from-commit: true` when you mean the release flow.
 
-**"Already deployed?" is a prefix listing**, not a `HEAD` on `<package-name>/<version>/index.html`: an asset bundle deployed with `require-index: false` has no `index.html`, so a HEAD probe could never see it — it would re-upload on every run and make every by-version repoint look like an empty target. A `listObjectsV2` for one key also answers honestly where S3 returns 403 instead of 404. Re-running the same commit is therefore idempotent (skips S3, just re-sets KV).
+**"Already deployed?" is a prefix listing**, not a `HEAD` on `<package-name>/<version>/index.html`: an asset bundle deployed with `require-index: false` has no `index.html`, so a HEAD probe could never see it — it would re-upload on every run and make every by-version repoint look like an empty target. A `listObjectsV2` capped at one key also answers honestly where S3 returns 403 instead of 404. Re-running the same commit is therefore idempotent (skips S3, just re-sets KV).
 
 That probe runs on **every** flow, including a repoint that uploads nothing — the point of it is that the KV must never be pointed at a prefix that isn't there. This is why the AWS role is always required.
 
@@ -83,7 +83,7 @@ jobs:
 | **GitHub** deployment/commit status | built-in ephemeral `GITHUB_TOKEN`                                                                       |
 | **Cloudflare KV**                   | scoped **API token** — Cloudflare has no GitHub-OIDC federation, so this is the single remaining secret |
 
-The assumed role needs `s3:ListBucket` on the bucket (the "is this version already deployed?" probe, and the listing the copy path walks) plus `s3:GetObject`, `s3:PutObject` and `s3:PutObjectAcl` on the package prefix (`<package-name>/*`) — objects are written `public-read`, and S3 requires `PutObjectAcl` for any request that carries an ACL. `id-token: write` on the calling job is what lets the action exchange the OIDC token for that role.
+The assumed role needs `s3:ListBucket` on the bucket (the "is this version already deployed?" probe, and the listing the copy path walks) plus `s3:GetObject`, `s3:PutObject`, `s3:PutObjectAcl` and `s3:AbortMultipartUpload` on the package prefix (`<package-name>/*`) — objects are written `public-read`, S3 requires `PutObjectAcl` for any request that carries an ACL, and uploads over 5 MB go multipart. `id-token: write` on the calling job is what lets the action exchange the OIDC token for that role.
 
 ## Inputs
 
@@ -117,12 +117,12 @@ The assumed role needs `s3:ListBucket` on the bucket (the "is this version alrea
 
 ### Outputs
 
-| Output    | Value                                                                                                                                                          |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version` | The deployed version (`<base-version>-commit-<shortSha>`, or the `version` input).                                                                             |
-| `s3-path` | `<package-name>/<version>`.                                                                                                                                    |
-| `cdn-url` | `<cdn-base-url>/<package-name>/<version>`.                                                                                                                     |
-| `mode`    | What the S3 step did: `upload` \| `copy` \| `skip`. Written **before** the KV patch, so an `if: always()` step can read it even when the run fails afterwards. |
+| Output    | Value                                                                                                                                                                                                                                                                           |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version` | The deployed version (`<base-version>-commit-<shortSha>`, or the `version` input).                                                                                                                                                                                              |
+| `s3-path` | `<package-name>/<version>`.                                                                                                                                                                                                                                                     |
+| `cdn-url` | `<cdn-base-url>/<package-name>/<version>`.                                                                                                                                                                                                                                      |
+| `mode`    | What the S3 step actually did: `upload` \| `copy` \| `skip`. Written once that step has succeeded and before the KV patch, so an `if: always()` step reading it after a later failure learns whether the bytes really landed. Unset if the run failed at or before the S3 step. |
 
 ## The three flows (matching the current pipeline)
 
@@ -142,11 +142,13 @@ The CF Worker serves `https://cdn.decentraland.org/<prefix>/<version>/…` and s
 - **Ordering.** The S3 step always runs before the KV patch, so KV never points at bytes not yet in S3. A failed run is safe to re-run (idempotent) — and a re-run after a partially-completed upload can be forced past the "already there" check with `force: true`.
 - **Transient failures are retried.** Cloudflare KV and Slack calls retry on a 429, any 5xx and network errors (3 attempts, exponential backoff), so a blip after the bytes land doesn't leave the deploy uploaded-but-not-repointed. S3 is retried by the aws-sdk itself.
 - **Multi-env is not atomic.** Repointing several environments writes each KV namespace in turn; on a mid-way failure the action throws an aggregate naming which envs were already updated vs failed (no rollback — KV has none).
-- **Conflicting inputs are errors, not silent winners.** `deployment-environments` together with `deployment-environment`; `cloudflare-namespace-id` with more than one environment; `version` equal to `source-version`; `deployment-path` together with `domain`; a duplicated environment; a `commit` that isn't a hex sha; a `dist-path` that is the repo root or resolves outside the workspace.
+- **Conflicting inputs are errors, not silent winners.** `deployment-environments` together with `deployment-environment`; `version` equal to `source-version`; `dist-path` together with `source-version` (the built folder would be silently discarded); `deployment-path` together with `domain`; a duplicated environment; a `commit` that isn't a hex sha; a `dist-path` that is the repo root or resolves outside the workspace.
+- **A shared KV namespace is collapsed, not rejected.** If several environments resolve to the same namespace id (for example a single `cloudflare-namespace-id`), the record is written once — writing it twice would be idempotent but pointless. The rollout still reports every environment.
+- **Package names must be lower-case** and at most 214 characters. S3 keys are case-sensitive, so an upper-case name would deploy to a prefix the worker never serves.
 - **Slack goes wherever the webhook points.** An incoming webhook posts to the channel it was installed on and ignores a `channel` field, so the message lands in `rollouts` only if the webhook was created there. Slack is observability: a failed notification warns, it never fails the deploy.
 - **Copy reproduces the whole prefix.** `@dcl/cdn-uploader` writes each file as separate objects (`file`, `file.gzip`, `file.br`) with `public-read`; a copy replicates every object under the prefix with `MetadataDirective: COPY` + `ACL: public-read`.
 - **`aws-sdk` v2.** `@dcl/cdn-uploader` takes a v2 `S3` client, constructed with **no** explicit creds so the OIDC session-token env vars are used. (v2 is in maintenance — a v3 shim is a future cleanup.)
-- **Pin your refs.** Third-party actions are pinned to commit SHAs. Pin this action to `@cdn-deploy-v1` — the floating major tag the release workflow moves on each `cdn-deploy-v*.*.*` tag — as the examples above do.
+- **Pin your refs.** Third-party actions are pinned to commit SHAs. Pin this action to `@cdn-deploy-v1` — the floating major tag the release workflow moves on each stable `cdn-deploy-vX.Y.Z` tag (prereleases are skipped) — as the examples above do.
 
 ## Development
 

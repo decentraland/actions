@@ -60,7 +60,7 @@ inputs:
     required: false
     default: "us-east-1"
   aws-role-to-assume:
-    description: "IAM role ARN assumed via GitHub OIDC (no static AWS keys). Required: every flow reads S3 to check whether the target version is already deployed. The role needs s3:ListBucket on the bucket plus s3:GetObject/s3:PutObject/s3:PutObjectAcl on the package prefix (objects are written public-read, and S3 requires PutObjectAcl for any request carrying an ACL)."
+    description: "IAM role ARN assumed via GitHub OIDC (no static AWS keys). Required: every flow reads S3 to check whether the target version is already deployed. The role needs s3:ListBucket on the bucket plus s3:GetObject/s3:PutObject/s3:PutObjectAcl/s3:AbortMultipartUpload on the package prefix (objects are written public-read, S3 requires PutObjectAcl for any request carrying an ACL, and uploads over 5 MB go multipart)."
     required: true
   s3-bucket:
     description: "Target CDN S3 bucket. Must have ACLs enabled (Object Ownership other than BucketOwnerEnforced) — objects are written `public-read`."

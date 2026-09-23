@@ -56,10 +56,24 @@ export function resolveEnsurePlan(opts: {
     return { s3: "copy", source: opts.commitVersion };
   }
 
+  const how =
+    "Provide a `dist-path` to upload, a `source-version` to copy from, or set " +
+    "`copy-from-commit: true` to copy the current commit's already-uploaded build into it " +
+    "(the release flow).";
+
+  // Reaching here with the target PRESENT means `force` carried us past the
+  // skip branch — saying "is not in S3" would send an operator hunting for a
+  // prefix that is sitting right there.
+  if (opts.targetExists) {
+    throw new Error(
+      `Target version "${opts.targetVersion}" is already in S3, but \`force\` was set and ` +
+        `there is nothing to re-populate it with. ${how} Or drop \`force\` to keep the ` +
+        "existing bytes.",
+    );
+  }
+
   throw new Error(
     `Target version "${opts.targetVersion}" is not in S3 and there is nothing to populate it ` +
-      "with. Provide a `dist-path` to upload, a `source-version` to copy from, or set " +
-      "`copy-from-commit: true` to copy the current commit's already-uploaded build into it " +
-      "(the release flow). To repoint at an existing version, deploy it first.",
+      `with. ${how} To repoint at an existing version, deploy it first.`,
   );
 }

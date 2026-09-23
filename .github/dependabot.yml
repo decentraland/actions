@@ -2,11 +2,17 @@ version: 2
 updates:
   # npm dependencies of the cdn-deploy action.
   #
-  # NOTE: these deps are vendored into the committed `cdn-deploy/dist/index.js`,
-  # so a merged bump only takes effect once the bundle is rebuilt. The CI job
-  # (.github/workflows/cdn-deploy-ci.yml) fails a stale dist/, so every one of
-  # these PRs goes red until someone runs `npm run build` and commits — which is
-  # the intended prompt, not a nuisance. Grouped to keep that to one rebuild.
+  # NOTE: the production deps are vendored into the committed
+  # `cdn-deploy/dist/index.js`, so a merged bump only takes effect once the
+  # bundle is rebuilt. The CI job (.github/workflows/cdn-deploy-ci.yml) fails a
+  # stale dist/, so those PRs go red until someone runs `npm run build` and
+  # commits — the intended prompt, not a nuisance. Grouped to keep that to one
+  # rebuild per week.
+  #
+  # Dev-dependency bumps mostly do NOT change dist/ (jest, ts-jest, prettier,
+  # @types/*); only `typescript` and `@vercel/ncc` do. Either way, because the
+  # rebuild has to be committed onto the branch, these PRs cannot be
+  # auto-merged — a human pushes the rebuild.
   - package-ecosystem: npm
     directory: /cdn-deploy
     schedule:
@@ -37,5 +43,9 @@ updates:
     directory: /cdn-deploy
     schedule:
       interval: weekly
+    groups:
+      composite-action-pins:
+        patterns:
+          - "*"
     commit-message:
       prefix: chore

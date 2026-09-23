@@ -2,7 +2,7 @@ import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { patchRolloutInEnvironments } from "../src/cloudflare";
 import { createObservability } from "../src/github";
-import { run } from "../src/index";
+import { reportFailure, run } from "../src/index";
 import { folderHasIndexHtml, readInputs } from "../src/inputs";
 import { copyFolderInS3, prefixExists, uploadFolderToS3 } from "../src/s3";
 import { notifyRollout } from "../src/slack";
@@ -391,6 +391,186 @@ describe("when running the cdn-deploy action", () => {
       expect(createObservabilityMock).toHaveBeenCalledWith(
         expect.objectContaining({ sha: COMMIT_INPUT_SHA, version: "1.0.0-commit-feed123" }),
       );
+    });
+  });
+  // The mutation survey found these unasserted: every one of the behaviours
+  // below could be deleted outright and the rest of the suite stayed green.
+  describe("and the run reports its results", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ distPath: "./dist", slackWebhook: "https://hooks.slack.com/x" });
+      readInputsMock.mockReturnValue(inputs);
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      prefixExistsMock.mockResolvedValue(false);
+      uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
+      patchRolloutInEnvironmentsMock.mockResolvedValue(["zone", "today"]);
+      notifyRolloutMock.mockResolvedValue(undefined);
+    });
+
+    it("should publish the deployed version", async () => {
+      await run();
+
+      expect(setOutputMock).toHaveBeenCalledWith("version", COMMIT_VERSION);
+    });
+
+    it("should publish the S3 prefix that was written", async () => {
+      await run();
+
+      expect(setOutputMock).toHaveBeenCalledWith("s3-path", `${PACKAGE_NAME}/${COMMIT_VERSION}`);
+    });
+
+    it("should publish a cdn url containing the package and version", async () => {
+      await run();
+
+      expect(setOutputMock).toHaveBeenCalledWith(
+        "cdn-url",
+        `https://cdn.decentraland.org/${PACKAGE_NAME}/${COMMIT_VERSION}`,
+      );
+    });
+
+    it("should probe the target prefix in the configured region and bucket", async () => {
+      await run();
+
+      expect(prefixExistsMock).toHaveBeenCalledWith({
+        region: "us-east-1",
+        bucket: "cdn-test-bucket",
+        prefix: `${PACKAGE_NAME}/${COMMIT_VERSION}`,
+      });
+    });
+
+    it("should open the deployment before doing any work", async () => {
+      await run();
+
+      expect(observability.start).toHaveBeenCalledTimes(1);
+    });
+
+    it("should stamp the rollout with the current time", async () => {
+      await run();
+
+      const [, , params] = patchRolloutInEnvironmentsMock.mock.calls[0];
+      expect(params.timestamp).toBeGreaterThan(0);
+    });
+
+    it("should surface KV retry warnings in the log", async () => {
+      await run();
+
+      const [account] = patchRolloutInEnvironmentsMock.mock.calls[0];
+      expect(typeof account.onRetry).toBe("function");
+    });
+
+    it("should record what the S3 step did in the job summary", async () => {
+      await run();
+
+      expect(summaryMock.addTable).toHaveBeenCalledWith(expect.arrayContaining([["S3", "upload"]]));
+    });
+  });
+
+  describe("and Slack is configured", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ distPath: "./dist", slackWebhook: "https://hooks.slack.com/x" });
+      readInputsMock.mockReturnValue(inputs);
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      prefixExistsMock.mockResolvedValue(false);
+      uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
+      patchRolloutInEnvironmentsMock.mockResolvedValue(["zone", "today"]);
+      notifyRolloutMock.mockResolvedValue(undefined);
+    });
+
+    it("should notify once per repointed environment", async () => {
+      await run();
+
+      expect(notifyRolloutMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("should link each message to that environment's own url", async () => {
+      await run();
+
+      expect(notifyRolloutMock.mock.calls.map((call) => call[0].url)).toEqual([
+        "https://decentraland.zone/auth",
+        "https://decentraland.today/auth",
+      ]);
+    });
+
+    it("should report the deployed version in the message", async () => {
+      await run();
+
+      expect(notifyRolloutMock).toHaveBeenCalledWith(
+        expect.objectContaining({ version: COMMIT_VERSION, prefix: PACKAGE_NAME }),
+      );
+    });
+
+    describe("and the notification fails", () => {
+      beforeEach(() => {
+        notifyRolloutMock.mockRejectedValue(new Error("slack down"));
+      });
+
+      it("should warn rather than stay silent", async () => {
+        await run();
+
+        expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Slack"));
+      });
+
+      it("should still mark the deploy successful", async () => {
+        await run();
+
+        expect(observability.succeed).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe("and the index guard is disabled for a non-HTML bundle", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ distPath: "./dist", requireIndex: false });
+      readInputsMock.mockReturnValue(inputs);
+      folderHasIndexHtmlMock.mockReturnValue(false);
+      prefixExistsMock.mockResolvedValue(false);
+      uploadFolderToS3Mock.mockResolvedValue(["bundle.js"]);
+      patchRolloutInEnvironmentsMock.mockResolvedValue(["zone", "today"]);
+    });
+
+    // The documented escape hatch for asset bundles — dropping requireIndex
+    // from the guard would hard-fail every one of these deploys.
+    it("should upload a folder with no index.html", async () => {
+      await run();
+
+      expect(uploadFolderToS3Mock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("and a built folder is combined with the release copy flag", () => {
+    beforeEach(() => {
+      inputs = buildInputs({
+        distPath: "./dist",
+        version: RELEASE_VERSION,
+        copyFromCommit: true,
+      });
+      readInputsMock.mockReturnValue(inputs);
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      prefixExistsMock.mockResolvedValue(false);
+      uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
+      patchRolloutInEnvironmentsMock.mockResolvedValue(["zone", "today"]);
+    });
+
+    // Guards the original production bug at the orchestration level, not just
+    // in the pure planner: the folder the caller built must win.
+    it("should upload the folder rather than copy the commit's build", async () => {
+      await run();
+
+      expect(uploadFolderToS3Mock).toHaveBeenCalledTimes(1);
+      expect(copyFolderInS3Mock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("and the run throws", () => {
+    it("should fail the job rather than report success", () => {
+      reportFailure(new Error("upload exploded"));
+
+      expect(core.setFailed).toHaveBeenCalledWith("upload exploded");
+    });
+
+    it("should stringify a non-error throw", () => {
+      reportFailure("plain string");
+
+      expect(core.setFailed).toHaveBeenCalledWith("plain string");
     });
   });
 });

@@ -348,10 +348,10 @@ describe("when putting a value with the Cloudflare KV client", () => {
 });
 
 describe("when parsing a stored rollout value", () => {
-  let context: { key: string; namespaceId: string };
+  let context: { label: string };
 
   beforeEach(() => {
-    context = { key: "decentraland.zone/auth", namespaceId: "ns-zone" };
+    context = { label: 'decentraland.zone/auth" in "zone' };
   });
 
   describe("and the key is absent from the namespace", () => {
@@ -385,7 +385,7 @@ describe("when parsing a stored rollout value", () => {
   describe("and the stored value is the literal string null", () => {
     it("should throw naming the key and the namespace", () => {
       expect(() => parseRolloutValue("null", context)).toThrow(
-        'Cloudflare KV value for "decentraland.zone/auth" (namespace ns-zone) is not a rollout object.',
+        'Cloudflare KV value for "decentraland.zone/auth" in "zone" is not a rollout object.',
       );
     });
   });
@@ -393,7 +393,7 @@ describe("when parsing a stored rollout value", () => {
   describe("and the stored value is malformed JSON", () => {
     it("should throw naming the key and the namespace", () => {
       expect(() => parseRolloutValue("{not json", context)).toThrow(
-        'Cloudflare KV value for "decentraland.zone/auth" (namespace ns-zone) is not valid JSON',
+        'Cloudflare KV value for "decentraland.zone/auth" in "zone" is not valid JSON',
       );
     });
   });
@@ -401,7 +401,7 @@ describe("when parsing a stored rollout value", () => {
   describe("and the stored value is a JSON array", () => {
     it("should throw naming the key and the namespace", () => {
       expect(() => parseRolloutValue("[]", context)).toThrow(
-        'Cloudflare KV value for "decentraland.zone/auth" (namespace ns-zone) is not a rollout object.',
+        'Cloudflare KV value for "decentraland.zone/auth" in "zone" is not a rollout object.',
       );
     });
   });
@@ -409,7 +409,7 @@ describe("when parsing a stored rollout value", () => {
   describe("and the stored records field is not an object", () => {
     it("should throw naming the key and the namespace", () => {
       expect(() => parseRolloutValue('{"records":"nope"}', context)).toThrow(
-        'Cloudflare KV value for "decentraland.zone/auth" (namespace ns-zone) has a `records` field that is not an object.',
+        'Cloudflare KV value for "decentraland.zone/auth" in "zone" has a `records` field that is not an object.',
       );
     });
   });
@@ -417,8 +417,35 @@ describe("when parsing a stored rollout value", () => {
   describe("and the stored records field is null", () => {
     it("should throw naming the key and the namespace", () => {
       expect(() => parseRolloutValue('{"records":null}', context)).toThrow(
-        'Cloudflare KV value for "decentraland.zone/auth" (namespace ns-zone) has a `records` field that is not an object.',
+        'Cloudflare KV value for "decentraland.zone/auth" in "zone" has a `records` field that is not an object.',
       );
+    });
+  });
+
+  // An array slipped through the first version of this guard: patchRollouts
+  // assigns a non-index property, JSON.stringify drops it, and the PUT looks
+  // like it succeeded while discarding every rollout record.
+  describe("and the stored records field is an array", () => {
+    it("should reject an empty array rather than silently wipe the rollout", () => {
+      expect(() => parseRolloutValue('{"records":[]}', context)).toThrow(
+        "`records` field that is not an object",
+      );
+    });
+
+    it("should reject a populated array", () => {
+      expect(() => parseRolloutValue('{"records":["x"]}', context)).toThrow(
+        "`records` field that is not an object",
+      );
+    });
+  });
+
+  describe("and the stored value is an empty string", () => {
+    it("should treat it as absent rather than as corrupt JSON", () => {
+      expect(parseRolloutValue("", context)).toEqual({ records: {} });
+    });
+
+    it("should treat whitespace as absent too", () => {
+      expect(parseRolloutValue("   ", context)).toEqual({ records: {} });
     });
   });
 });
@@ -450,7 +477,7 @@ describe("when patching a rollout in the KV", () => {
         prefix: "@dcl/auth-site",
         version: "1.0.0-42.commit-abc1234",
         timestamp,
-        namespaceId: "ns-zone",
+        environment: "zone",
       });
       written = JSON.parse(kvMock.put.mock.calls[0][1] as string);
     });
@@ -490,7 +517,7 @@ describe("when patching a rollout in the KV", () => {
         prefix: "@dcl/auth-site",
         version: "1.0.0",
         timestamp,
-        namespaceId: "ns-zone",
+        environment: "zone",
       });
       written = JSON.parse(kvMock.put.mock.calls[0][1] as string);
     });
@@ -526,7 +553,7 @@ describe("when patching a rollout in the KV", () => {
         prefix: "@dcl/auth-site",
         version: "1.0.0",
         timestamp,
-        namespaceId: "ns-zone",
+        environment: "zone",
       });
       written = JSON.parse(kvMock.put.mock.calls[0][1] as string);
     });
@@ -566,9 +593,9 @@ describe("when patching a rollout in the KV", () => {
           prefix: "@dcl/auth-site",
           version: "1.0.0",
           timestamp,
-          namespaceId: "ns-zone",
+          environment: "zone",
         }),
-      ).rejects.toThrow('Could not merge the rollout into "auth" (namespace ns-zone)');
+      ).rejects.toThrow('Could not merge the rollout into "auth" in "zone"');
     });
 
     it("should not write anything back to the KV", async () => {
@@ -580,7 +607,7 @@ describe("when patching a rollout in the KV", () => {
           prefix: "@dcl/auth-site",
           version: "1.0.0",
           timestamp,
-          namespaceId: "ns-zone",
+          environment: "zone",
         }),
       ).rejects.toThrow();
 
@@ -602,9 +629,9 @@ describe("when patching a rollout in the KV", () => {
           prefix: "@dcl/auth-site",
           version: "1.0.0",
           timestamp,
-          namespaceId: "ns-zone",
+          environment: "zone",
         }),
-      ).rejects.toThrow('Cloudflare KV value for "auth" (namespace ns-zone) is not valid JSON');
+      ).rejects.toThrow('Cloudflare KV value for "auth" in "zone" is not valid JSON');
     });
   });
 });
@@ -679,6 +706,31 @@ describe("when patching a rollout across multiple environments", () => {
         "https://api.cloudflare.com/client/v4/accounts/acc/storage/kv/namespaces/ns-zone/values/sites",
         "https://api.cloudflare.com/client/v4/accounts/acc/storage/kv/namespaces/ns-today/values/sites",
       ]);
+    });
+  });
+
+  // The "nothing was written" arm of the aggregate message had never been
+  // produced — and it is what an operator sees with a bad API token.
+  describe("and every namespace fails", () => {
+    beforeEach(() => {
+      fetchMock.mockImplementation((url, init) => {
+        if (init?.method !== "PUT") return Promise.resolve(createResponse(404, "key not found"));
+        return Promise.resolve(createResponse(403, "forbidden"));
+      });
+    });
+
+    it("should throw naming every failed environment", async () => {
+      await expect(patchRolloutInEnvironments(account, targets, params)).rejects.toThrow(
+        "KV update failed for: zone, today.",
+      );
+    });
+
+    it("should not claim anything was already updated", async () => {
+      await expect(patchRolloutInEnvironments(account, targets, params)).rejects.toThrow(
+        expect.objectContaining({
+          message: expect.not.stringContaining("Already updated"),
+        }) as unknown as Error,
+      );
     });
   });
 
@@ -757,7 +809,7 @@ describe("when patching a rollout across multiple environments", () => {
 
     it("should surface the failing namespace id in the aggregate error", async () => {
       await expect(patchRolloutInEnvironments(account, targets, params)).rejects.toThrow(
-        'Cloudflare KV value for "sites" (namespace ns-today) is not valid JSON',
+        'Cloudflare KV value for "sites" in "today" is not valid JSON',
       );
     });
   });

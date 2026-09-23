@@ -364,3 +364,35 @@ describe("when running an operation with retry", () => {
     });
   });
 });
+
+describe("when the callback throws a programming error", () => {
+  let sleep: jest.Mock;
+  let fn: jest.Mock;
+
+  beforeEach(() => {
+    sleep = jest.fn().mockResolvedValue(undefined);
+    fn = jest.fn().mockRejectedValue(new TypeError("cannot read properties of undefined"));
+  });
+
+  // Retrying a bug just repeats the same stack trace and buries the cause
+  // under two misleading "transient failure, retrying" warnings.
+  it("should not treat it as transient", () => {
+    expect(isRetryable(new TypeError("boom"))).toBe(false);
+  });
+
+  it("should not retry a ReferenceError either", () => {
+    expect(isRetryable(new ReferenceError("boom"))).toBe(false);
+  });
+
+  it("should give up after a single attempt", async () => {
+    await expect(withRetry("op", fn, { sleep })).rejects.toThrow("cannot read properties");
+
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("should not back off", async () => {
+    await expect(withRetry("op", fn, { sleep })).rejects.toThrow();
+
+    expect(sleep).not.toHaveBeenCalled();
+  });
+});

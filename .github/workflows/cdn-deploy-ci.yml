@@ -23,7 +23,10 @@ permissions:
 
 concurrency:
   group: cdn-deploy-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Only supersede PR runs. A cancelled run is not a failure, so cancelling a
+  # push to main would silently discard the dist-staleness verdict for that
+  # commit — exactly what this workflow exists to guarantee.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -33,7 +36,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
@@ -58,7 +61,11 @@ jobs:
       - name: Fail if dist/ is stale
         run: |
           set -euo pipefail
-          if ! git diff --exit-code -- dist; then
+          # --porcelain, not `git diff`: a newly emitted file in dist/ is
+          # untracked, and `git diff` would not report it.
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            git status --porcelain -- dist
+            git diff -- dist || true
             echo "::error::cdn-deploy/dist is out of date. Run 'npm run build' in cdn-deploy/ and commit the result." >&2
             exit 1
           fi

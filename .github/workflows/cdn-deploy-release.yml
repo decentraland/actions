@@ -28,7 +28,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
@@ -50,11 +50,15 @@ jobs:
 
       - name: Require the tag to be on main
         if: steps.guard.outputs.stable == 'true'
+        env:
+          FULL_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
-            echo "::error::This tag is not an ancestor of origin/main. Release from merged code only." >&2
+          # Peel here too: this must judge the exact commit the tag move blesses.
+          commit="$(git rev-parse "${FULL_TAG}^{commit}")"
+          if ! git merge-base --is-ancestor "${commit}" origin/main; then
+            echo "::error::${commit} is not an ancestor of origin/main. Release from merged code only." >&2
             exit 1
           fi
 
@@ -72,9 +76,11 @@ jobs:
           set -euo pipefail
           npm ci
           npm run typecheck
+          npm run format:check
           npm test
           npm run build
-          if ! git diff --exit-code -- dist; then
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            git status --porcelain -- dist
             echo "::error::cdn-deploy/dist does not match src/ at this tag. Rebuild, commit, and re-tag." >&2
             exit 1
           fi

@@ -64,6 +64,8 @@ export function createObservability(opts: {
   // The deployment records the commit whose build is going live; the status has
   // to land somewhere a reviewer sees it.
   const deploySha = opts.sha || github.context.sha;
+  // Not `deploySha`: on a pull_request GITHUB_SHA is the ephemeral merge
+  // commit, and a status posted there never surfaces on the PR.
   const sha = opts.sha || statusSha();
   const environmentName = opts.environments.join("+") || "stage";
   const isProduction = opts.environments.includes("org");

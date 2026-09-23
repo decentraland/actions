@@ -10,7 +10,8 @@ export const DEFAULT_ROLLOUT_NAME = "_site";
 export const DEFAULT_ENVIRONMENTS: Environment[] = ["zone", "today"];
 
 /** An npm package name, optionally scoped. Also the S3 key root and KV prefix. */
-const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const PACKAGE_NAME_MAX = 214;
 
 export function isEnvironment(value: string): value is Environment {
   return (ENVIRONMENTS as string[]).includes(value);
@@ -52,6 +53,13 @@ export function deriveDeploymentPath(packageName: string): string {
  * shape so it can't contain path segments, traversal, or separators.
  */
 export function validatePackageName(packageName: string): string {
+  if (packageName.length > PACKAGE_NAME_MAX) {
+    throw new Error(
+      `Package name is ${packageName.length} characters; npm caps names at ${PACKAGE_NAME_MAX}.`,
+    );
+  }
+  // Lower-case only: S3 keys are case-sensitive, so `@DCL/Auth` would deploy to
+  // a prefix the worker never serves and that `prefixExists` can never match.
   if (!PACKAGE_NAME_RE.test(packageName)) {
     throw new Error(
       `Invalid package name "${packageName}". Expected an npm package name (optionally ` +
@@ -137,17 +145,21 @@ export function resolveKvTargets(
   map: NamespaceMap,
   override?: string,
 ): KvTarget[] {
-  if (override && environments.length > 1) {
-    throw new Error(
-      "`cloudflare-namespace-id` maps every environment to one namespace, so a multi-environment " +
-        `run (${environments.join(", ")}) would write them all to the same place. Use the ` +
-        "per-environment `cloudflare-namespace-*` inputs instead.",
-    );
-  }
-  return environments.map((environment) => ({
+  const targets = environments.map((environment) => ({
     environment,
     namespaceId: resolveNamespace(environment, map, override),
   }));
+
+  // Several environments can legitimately share one namespace (a single-account
+  // test setup, or an explicit `cloudflare-namespace-id`). Writing the same
+  // record to the same namespace twice is idempotent but pointless, so collapse
+  // the duplicates and keep the first environment's name for reporting.
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    if (seen.has(target.namespaceId)) return false;
+    seen.add(target.namespaceId);
+    return true;
+  });
 }
 
 export function parsePercentage(raw: string): number {
@@ -202,7 +214,7 @@ export function readPackageJson(folder: string): { name?: string; version?: stri
  */
 export function validateDistPath(
   distPath: string,
-  workspace = process.env.GITHUB_WORKSPACE,
+  workspace = process.env.GITHUB_WORKSPACE || process.cwd(),
 ): string {
   const resolved = path.resolve(distPath);
 
@@ -213,25 +225,28 @@ export function validateDistPath(
     throw new Error(`dist-path "${distPath}" is not a directory`);
   }
 
-  if (workspace) {
-    const root = path.resolve(workspace);
-    const relative = path.relative(root, resolved);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) {
-      throw new Error(
-        `dist-path "${distPath}" resolves outside the workspace (${root}). Point it at the ` +
-          "build output inside the checked-out repository.",
-      );
-    }
-    if (relative === "") {
-      throw new Error(
-        "dist-path is the repository root. Everything under it — including `.git`, `.env` and " +
-          "`.npmrc` — would be published to a public CDN bucket. Point it at the build output " +
-          "directory (e.g. ./dist).",
-      );
-    }
-  }
+  // Compare real paths. `path.resolve` does not follow symlinks, so a
+  // `dist -> ..` symlink would pass a textual containment check while the
+  // uploader globbed through it, and a symlinked GITHUB_WORKSPACE (common on
+  // self-hosted runners) would reject a perfectly valid folder.
+  const real = fs.realpathSync(resolved);
+  const root = fs.realpathSync(path.resolve(workspace));
+  const relative = path.relative(root, real);
 
-  if (fs.existsSync(path.join(resolved, ".git"))) {
+  if (relative.split(path.sep)[0] === ".." || path.isAbsolute(relative)) {
+    throw new Error(
+      `dist-path "${distPath}" resolves to ${real}, which is outside the workspace (${root}). ` +
+        "Point it at the build output inside the checked-out repository.",
+    );
+  }
+  if (relative === "") {
+    throw new Error(
+      "dist-path is the repository root. Everything under it — including `.git`, `.env` and " +
+        "`.npmrc` — would be published to a public CDN bucket. Point it at the build output " +
+        "directory (e.g. ./dist).",
+    );
+  }
+  if (fs.existsSync(path.join(real, ".git"))) {
     throw new Error(
       `dist-path "${distPath}" contains a .git directory, which would be published to a public ` +
         "CDN bucket. Point it at the build output directory.",
@@ -309,6 +324,12 @@ export function readInputs(): ActionInputs {
 
   const version = core.getInput("version") || undefined;
   const sourceVersion = core.getInput("source-version") || undefined;
+  if (distPath && sourceVersion) {
+    throw new Error(
+      "Provide either `dist-path` (publish these bytes) or `source-version` (copy bytes already " +
+        "in S3), not both — otherwise the folder you built would be silently discarded.",
+    );
+  }
   if (version && sourceVersion && version === sourceVersion) {
     throw new Error(
       `\`version\` and \`source-version\` are both "${version}" — a version cannot be copied ` +

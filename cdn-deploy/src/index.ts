@@ -7,7 +7,7 @@ import { copyFolderInS3, prefixExists, uploadFolderToS3 } from "./s3";
 import { patchRolloutInEnvironments } from "./cloudflare";
 import { notifyRollout } from "./slack";
 import { createObservability } from "./github";
-import { Environment, S3Action } from "./types";
+import { DeploymentTarget, Environment, S3Action } from "./types";
 
 async function run(): Promise<void> {
   const inputs = readInputs();
@@ -42,11 +42,15 @@ async function run(): Promise<void> {
     packageName,
     version: targetVersion,
     cdnUrl,
-    sha,
+    // Only the explicit override: passing the resolved sha unconditionally
+    // would shadow the PR-head fallback, since GITHUB_SHA is always set.
+    sha: inputs.commit,
   });
   await observability.start();
 
-  let s3Action: S3Action = "skip";
+  // Distinct from "skip": the summary must not claim "already in S3, nothing
+  // to do" for a run that failed before the S3 step ran at all.
+  let s3Action: S3Action | "not-attempted" = "not-attempted";
   try {
     // 1) Ensure the target bytes are in S3 (state-aware).
     //
@@ -75,13 +79,9 @@ async function run(): Promise<void> {
       force: inputs.force,
       copyFromCommit: inputs.copyFromCommit,
     });
-    s3Action = plan.s3;
-    // Published before the KV work so a failure downstream still tells a
-    // subsequent `if: always()` step whether the bytes were written.
-    core.setOutput("mode", s3Action);
-
     if (plan.s3 === "skip") {
       core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
+      s3Action = "skip";
     } else if (plan.s3 === "copy") {
       const sourceFolder = `${packageName}/${plan.source}`;
       await core.group(
@@ -96,6 +96,7 @@ async function run(): Promise<void> {
           core.info(`Copied ${copied} objects.`);
         },
       );
+      s3Action = "copy";
     } else {
       await core.group(
         `Uploading ${inputs.distPath} -> s3://${inputs.s3Bucket}/${remoteFolder}`,
@@ -117,7 +118,13 @@ async function run(): Promise<void> {
           core.info(`Uploaded ${uploaded.length} objects.`);
         },
       );
+      s3Action = "upload";
     }
+
+    // Set only now, so the value reports what the S3 step actually DID. Setting
+    // it from the plan meant a failed upload still reported `mode: upload`, and
+    // an `if: always()` step reading it would treat the bytes as live.
+    core.setOutput("mode", s3Action);
 
     // 2) KV: repoint each environment, or stage (empty list -> no KV).
     if (envs.length === 0) {
@@ -176,7 +183,7 @@ async function run(): Promise<void> {
 async function notifyEnvironments(
   inputs: {
     slackWebhook?: string;
-    target: Parameters<typeof rolloutUrlForTarget>[0];
+    target: DeploymentTarget;
     deploymentName: string;
     percentage: number;
   },
@@ -204,7 +211,7 @@ async function notifyEnvironments(
 
 /** Best-effort GitHub job summary table (no-op outside Actions / on failure). */
 async function writeSummary(s: {
-  s3Action: S3Action;
+  s3Action: S3Action | "not-attempted";
   packageName: string;
   version: string;
   environments: string[];
@@ -235,8 +242,15 @@ async function writeSummary(s: {
   }
 }
 
-run().catch((e) => {
+/**
+ * Turn a thrown error into a failed job. Exported so the suite can pin it: it
+ * is the only thing that makes a broken deploy show up red, and a top-level
+ * `.catch` body is otherwise unreachable from a test.
+ */
+export function reportFailure(e: unknown): void {
   core.setFailed(e instanceof Error ? e.message : String(e));
-});
+}
+
+run().catch(reportFailure);
 
 export { run };

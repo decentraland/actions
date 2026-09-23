@@ -81396,28 +81396,32 @@ function createCloudflareKV(opts) {
  *
  * A missing key, a malformed value, or a stored `null` must not surface as a
  * context-free `SyntaxError` / `Cannot read properties of null` halfway through
- * a deploy — the message has to name the key so an operator can go fix it.
+ * a deploy — the message has to say which environment and key so an operator
+ * can go fix it. Namespace ids are masked in the log, so the caller passes a
+ * readable label rather than the id.
  */
 function parseRolloutValue(current, context) {
-    if (current === null)
+    if (current === null || current.trim() === "")
         return { records: {} };
     let parsed;
     try {
         parsed = JSON.parse(current);
     }
     catch (e) {
-        throw new Error(`Cloudflare KV value for "${context.key}" (namespace ${context.namespaceId}) is not valid ` +
-            `JSON: ${e instanceof Error ? e.message : String(e)}`);
+        throw new Error(`Cloudflare KV value for "${context.label}" is not valid JSON: ` +
+            `${e instanceof Error ? e.message : String(e)}`);
     }
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error(`Cloudflare KV value for "${context.key}" (namespace ${context.namespaceId}) is not a ` +
-            "rollout object.");
+        throw new Error(`Cloudflare KV value for "${context.label}" is not a rollout object.`);
     }
     const domain = parsed;
     if (domain.records !== undefined &&
-        (typeof domain.records !== "object" || domain.records === null)) {
-        throw new Error(`Cloudflare KV value for "${context.key}" (namespace ${context.namespaceId}) has a ` +
-            "`records` field that is not an object.");
+        (typeof domain.records !== "object" || domain.records === null || Array.isArray(domain.records))) {
+        // An array is the dangerous shape: `patchRollouts` would assign a
+        // non-index property that JSON.stringify drops, so the write would look
+        // like it succeeded while silently discarding every rollout record.
+        throw new Error(`Cloudflare KV value for "${context.label}" has a \`records\` field that is not an ` +
+            "object.");
     }
     return domain.records ? domain : { ...domain, records: {} };
 }
@@ -81433,15 +81437,15 @@ function parseRolloutValue(current, context) {
  * is re-thrown here with that context attached.
  */
 async function patchRolloutInKV(kv, params) {
-    const namespaceId = params.namespaceId || "(unknown)";
+    const label = params.environment ? `${params.key}" in "${params.environment}` : params.key;
     const current = await kv.get(params.key);
-    const currentValues = parseRolloutValue(current, { key: params.key, namespaceId });
+    const currentValues = parseRolloutValue(current, { label });
     let newValues;
     try {
         newValues = (0, rollouts_lib_1.patchRollouts)(currentValues, params.rolloutName, { percentage: params.percentage, prefix: params.prefix, version: params.version }, params.timestamp);
     }
     catch (e) {
-        throw new Error(`Could not merge the rollout into "${params.key}" (namespace ${namespaceId}): ` +
+        throw new Error(`Could not merge the rollout into "${label}": ` +
             `${e instanceof Error ? e.message : String(e)}. An existing record with a non-semver ` +
             "version will do this — inspect the stored value.");
     }
@@ -81472,7 +81476,7 @@ async function patchRolloutInEnvironments(account, targets, params) {
                 sleep: account.sleep,
                 onRetry: account.onRetry,
             });
-            await patchRolloutInKV(kv, { ...params, namespaceId });
+            await patchRolloutInKV(kv, { ...params, environment });
             succeeded.push(environment);
         }
         catch (e) {
@@ -81576,6 +81580,8 @@ function createObservability(opts) {
     // The deployment records the commit whose build is going live; the status has
     // to land somewhere a reviewer sees it.
     const deploySha = opts.sha || github.context.sha;
+    // Not `deploySha`: on a pull_request GITHUB_SHA is the ephemeral merge
+    // commit, and a status posted there never surfaces on the PR.
     const sha = opts.sha || statusSha();
     const environmentName = opts.environments.join("+") || "stage";
     const isProduction = opts.environments.includes("org");
@@ -81696,6 +81702,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.reportFailure = reportFailure;
 exports.run = run;
 const core = __importStar(__nccwpck_require__(37484));
 const github = __importStar(__nccwpck_require__(93228));
@@ -81734,10 +81741,14 @@ async function run() {
         packageName,
         version: targetVersion,
         cdnUrl,
-        sha,
+        // Only the explicit override: passing the resolved sha unconditionally
+        // would shadow the PR-head fallback, since GITHUB_SHA is always set.
+        sha: inputs.commit,
     });
     await observability.start();
-    let s3Action = "skip";
+    // Distinct from "skip": the summary must not claim "already in S3, nothing
+    // to do" for a run that failed before the S3 step ran at all.
+    let s3Action = "not-attempted";
     try {
         // 1) Ensure the target bytes are in S3 (state-aware).
         //
@@ -81763,12 +81774,9 @@ async function run() {
             force: inputs.force,
             copyFromCommit: inputs.copyFromCommit,
         });
-        s3Action = plan.s3;
-        // Published before the KV work so a failure downstream still tells a
-        // subsequent `if: always()` step whether the bytes were written.
-        core.setOutput("mode", s3Action);
         if (plan.s3 === "skip") {
             core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
+            s3Action = "skip";
         }
         else if (plan.s3 === "copy") {
             const sourceFolder = `${packageName}/${plan.source}`;
@@ -81781,6 +81789,7 @@ async function run() {
                 });
                 core.info(`Copied ${copied} objects.`);
             });
+            s3Action = "copy";
         }
         else {
             await core.group(`Uploading ${inputs.distPath} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
@@ -81798,7 +81807,12 @@ async function run() {
                 }
                 core.info(`Uploaded ${uploaded.length} objects.`);
             });
+            s3Action = "upload";
         }
+        // Set only now, so the value reports what the S3 step actually DID. Setting
+        // it from the plan meant a failed upload still reported `mode: upload`, and
+        // an `if: always()` step reading it would treat the bytes as live.
+        core.setOutput("mode", s3Action);
         // 2) KV: repoint each environment, or stage (empty list -> no KV).
         if (envs.length === 0) {
             core.info("> Stage only: bytes are in S3, KV left unchanged.");
@@ -81890,9 +81904,15 @@ async function writeSummary(s) {
         core.warning(`Could not write job summary: ${e instanceof Error ? e.message : String(e)}`);
     }
 }
-run().catch((e) => {
+/**
+ * Turn a thrown error into a failed job. Exported so the suite can pin it: it
+ * is the only thing that makes a broken deploy show up red, and a top-level
+ * `.catch` body is otherwise unreachable from a test.
+ */
+function reportFailure(e) {
     core.setFailed(e instanceof Error ? e.message : String(e));
-});
+}
+run().catch(reportFailure);
 
 
 /***/ }),
@@ -81961,7 +81981,8 @@ exports.DEFAULT_CDN_BASE_URL = "https://cdn.decentraland.org";
 exports.DEFAULT_ROLLOUT_NAME = "_site";
 exports.DEFAULT_ENVIRONMENTS = ["zone", "today"];
 /** An npm package name, optionally scoped. Also the S3 key root and KV prefix. */
-const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const PACKAGE_NAME_MAX = 214;
 function isEnvironment(value) {
     return exports.ENVIRONMENTS.includes(value);
 }
@@ -82001,6 +82022,11 @@ function deriveDeploymentPath(packageName) {
  * shape so it can't contain path segments, traversal, or separators.
  */
 function validatePackageName(packageName) {
+    if (packageName.length > PACKAGE_NAME_MAX) {
+        throw new Error(`Package name is ${packageName.length} characters; npm caps names at ${PACKAGE_NAME_MAX}.`);
+    }
+    // Lower-case only: S3 keys are case-sensitive, so `@DCL/Auth` would deploy to
+    // a prefix the worker never serves and that `prefixExists` can never match.
     if (!PACKAGE_NAME_RE.test(packageName)) {
         throw new Error(`Invalid package name "${packageName}". Expected an npm package name (optionally ` +
             "`@scope/`-prefixed) with no path separators or traversal — it is used as the S3 key " +
@@ -82062,15 +82088,21 @@ function resolveNamespace(environment, map, override) {
     return ns;
 }
 function resolveKvTargets(environments, map, override) {
-    if (override && environments.length > 1) {
-        throw new Error("`cloudflare-namespace-id` maps every environment to one namespace, so a multi-environment " +
-            `run (${environments.join(", ")}) would write them all to the same place. Use the ` +
-            "per-environment `cloudflare-namespace-*` inputs instead.");
-    }
-    return environments.map((environment) => ({
+    const targets = environments.map((environment) => ({
         environment,
         namespaceId: resolveNamespace(environment, map, override),
     }));
+    // Several environments can legitimately share one namespace (a single-account
+    // test setup, or an explicit `cloudflare-namespace-id`). Writing the same
+    // record to the same namespace twice is idempotent but pointless, so collapse
+    // the duplicates and keep the first environment's name for reporting.
+    const seen = new Set();
+    return targets.filter((target) => {
+        if (seen.has(target.namespaceId))
+            return false;
+        seen.add(target.namespaceId);
+        return true;
+    });
 }
 function parsePercentage(raw) {
     const pct = raw === "" ? 100 : Number(raw);
@@ -82117,7 +82149,7 @@ function readPackageJson(folder) {
  * and `.npmrc` to the CDN. Keep it inside the workspace and make the caller
  * name a real directory.
  */
-function validateDistPath(distPath, workspace = process.env.GITHUB_WORKSPACE) {
+function validateDistPath(distPath, workspace = process.env.GITHUB_WORKSPACE || process.cwd()) {
     const resolved = path.resolve(distPath);
     if (!fs.existsSync(resolved)) {
         throw new Error(`dist-path "${distPath}" does not exist`);
@@ -82125,20 +82157,23 @@ function validateDistPath(distPath, workspace = process.env.GITHUB_WORKSPACE) {
     if (!fs.statSync(resolved).isDirectory()) {
         throw new Error(`dist-path "${distPath}" is not a directory`);
     }
-    if (workspace) {
-        const root = path.resolve(workspace);
-        const relative = path.relative(root, resolved);
-        if (relative.startsWith("..") || path.isAbsolute(relative)) {
-            throw new Error(`dist-path "${distPath}" resolves outside the workspace (${root}). Point it at the ` +
-                "build output inside the checked-out repository.");
-        }
-        if (relative === "") {
-            throw new Error("dist-path is the repository root. Everything under it — including `.git`, `.env` and " +
-                "`.npmrc` — would be published to a public CDN bucket. Point it at the build output " +
-                "directory (e.g. ./dist).");
-        }
+    // Compare real paths. `path.resolve` does not follow symlinks, so a
+    // `dist -> ..` symlink would pass a textual containment check while the
+    // uploader globbed through it, and a symlinked GITHUB_WORKSPACE (common on
+    // self-hosted runners) would reject a perfectly valid folder.
+    const real = fs.realpathSync(resolved);
+    const root = fs.realpathSync(path.resolve(workspace));
+    const relative = path.relative(root, real);
+    if (relative.split(path.sep)[0] === ".." || path.isAbsolute(relative)) {
+        throw new Error(`dist-path "${distPath}" resolves to ${real}, which is outside the workspace (${root}). ` +
+            "Point it at the build output inside the checked-out repository.");
     }
-    if (fs.existsSync(path.join(resolved, ".git"))) {
+    if (relative === "") {
+        throw new Error("dist-path is the repository root. Everything under it — including `.git`, `.env` and " +
+            "`.npmrc` — would be published to a public CDN bucket. Point it at the build output " +
+            "directory (e.g. ./dist).");
+    }
+    if (fs.existsSync(path.join(real, ".git"))) {
         throw new Error(`dist-path "${distPath}" contains a .git directory, which would be published to a public ` +
             "CDN bucket. Point it at the build output directory.");
     }
@@ -82199,6 +82234,10 @@ function readInputs() {
         core.setSecret(namespaceId);
     const version = core.getInput("version") || undefined;
     const sourceVersion = core.getInput("source-version") || undefined;
+    if (distPath && sourceVersion) {
+        throw new Error("Provide either `dist-path` (publish these bytes) or `source-version` (copy bytes already " +
+            "in S3), not both — otherwise the folder you built would be silently discarded.");
+    }
     if (version && sourceVersion && version === sourceVersion) {
         throw new Error(`\`version\` and \`source-version\` are both "${version}" — a version cannot be copied ` +
             "onto itself.");
@@ -82290,10 +82329,19 @@ function resolveEnsurePlan(opts) {
     if (opts.copyFromCommit && opts.targetVersion !== opts.commitVersion) {
         return { s3: "copy", source: opts.commitVersion };
     }
-    throw new Error(`Target version "${opts.targetVersion}" is not in S3 and there is nothing to populate it ` +
-        "with. Provide a `dist-path` to upload, a `source-version` to copy from, or set " +
+    const how = "Provide a `dist-path` to upload, a `source-version` to copy from, or set " +
         "`copy-from-commit: true` to copy the current commit's already-uploaded build into it " +
-        "(the release flow). To repoint at an existing version, deploy it first.");
+        "(the release flow).";
+    // Reaching here with the target PRESENT means `force` carried us past the
+    // skip branch — saying "is not in S3" would send an operator hunting for a
+    // prefix that is sitting right there.
+    if (opts.targetExists) {
+        throw new Error(`Target version "${opts.targetVersion}" is already in S3, but \`force\` was set and ` +
+            `there is nothing to re-populate it with. ${how} Or drop \`force\` to keep the ` +
+            "existing bytes.");
+    }
+    throw new Error(`Target version "${opts.targetVersion}" is not in S3 and there is nothing to populate it ` +
+        `with. ${how} To repoint at an existing version, deploy it first.`);
 }
 
 
@@ -82310,6 +82358,11 @@ exports.withRetry = withRetry;
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** A transient failure worth retrying: a network error, a 429, or any 5xx. */
 function isRetryable(e) {
+    // A bug in the callback is not a transient failure: retrying it just repeats
+    // the same stack trace and buries the real cause under "retrying" warnings.
+    if (e instanceof TypeError || e instanceof ReferenceError || e instanceof SyntaxError) {
+        return false;
+    }
     const status = e?.status;
     if (typeof status === "number")
         return status === 429 || status >= 500;
@@ -82327,7 +82380,7 @@ function isRetryable(e) {
  * safe.
  */
 async function withRetry(label, fn, opts = {}) {
-    const attempts = opts.attempts ?? 3;
+    const attempts = Math.max(1, opts.attempts ?? 3);
     const baseDelayMs = opts.baseDelayMs ?? 500;
     const sleep = opts.sleep ?? defaultSleep;
     let lastError;
