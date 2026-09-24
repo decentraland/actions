@@ -86,7 +86,22 @@ async function run(): Promise<void> {
         grant = await broker.requestCredentials({ packageName, version: targetVersion });
       } catch (e) {
         if (!(e instanceof BrokerError) || e.code !== "version_already_published") throw e;
-        core.info(`> ${remoteFolder} is already published — skipping the S3 write.`);
+
+        // `force` means "write these bytes anyway", and a published version cannot be
+        // written at all — so honouring the skip here would report success for a run that
+        // did the opposite of what was asked.
+        if (inputs.force) {
+          throw new Error(
+            `\`force\` was set, but ${packageName}@${targetVersion} is already published and its ` +
+              "bytes are immutable — they may be what production is serving. Deploy a new version " +
+              "instead of replacing a released one.",
+          );
+        }
+
+        core.info(
+          `> ${remoteFolder} is already published — skipping the S3 write. What the CDN serves ` +
+            "for this version is what was published before, not what this run built.",
+        );
         grant = undefined;
       }
 

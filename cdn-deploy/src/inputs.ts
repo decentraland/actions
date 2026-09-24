@@ -184,7 +184,65 @@ export function validateDistPath(
     );
   }
 
+  assertNoEscapingSymlinks(real, distPath);
+
   return distPath;
+}
+
+/**
+ * Refuse a symlink inside the build folder that points outside it.
+ *
+ * Checking the root is not enough. The uploader globs `**\/*` with `dot: true` and glob
+ * follows symlinked directories, so a single `dist/assets -> ../.git` publishes the
+ * repository's git config — which on a runner carries the `AUTHORIZATION: basic <token>`
+ * header `actions/checkout` writes — to a public bucket, at a guessable URL, cached
+ * immutable for a year. The same trick reaches `~/.aws`, `~/.npmrc` and the runner's
+ * workflow temp directory.
+ *
+ * This does not need a hostile workflow author: any build step, or a dependency's
+ * postinstall, can drop one into `dist`.
+ *
+ * Symlinks that stay inside the folder are fine — they resolve to content that was going
+ * to be published anyway.
+ */
+function assertNoEscapingSymlinks(root: string, distPath: string): void {
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+
+      if (entry.isSymbolicLink()) {
+        // realpath, not readlink: a relative link, and a chain of links, both have to be
+        // resolved before the containment test means anything.
+        let target: string;
+        try {
+          target = fs.realpathSync(full);
+        } catch {
+          // Dangling: it publishes nothing, and the uploader skips it.
+          continue;
+        }
+        const relative = path.relative(root, target);
+        if (
+          relative === ".." ||
+          relative.split(path.sep)[0] === ".." ||
+          path.isAbsolute(relative)
+        ) {
+          throw new Error(
+            `dist-path "${distPath}" contains a symlink that points outside it: ` +
+              `${path.relative(root, full)} -> ${target}. The uploader follows symlinks and ` +
+              "writes every object public-read, so this would publish files from outside the " +
+              "build to a public CDN. Remove it, or point dist-path at a clean build folder.",
+          );
+        }
+        // Inside the folder, so its contents are already in scope. Not followed, to avoid
+        // a cycle.
+        continue;
+      }
+
+      if (entry.isDirectory()) walk(full);
+    }
+  };
+
+  walk(root);
 }
 
 /** Read and validate all action inputs from the environment via @actions/core. */

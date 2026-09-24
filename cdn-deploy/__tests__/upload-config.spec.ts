@@ -24,7 +24,18 @@ afterEach(() => {
 
 describe("when the built folder has no config.yml", () => {
   it("should use the same defaults the pipeline uses", () => {
-    expect(readUploadConfig(folder)).toEqual({ immutable: true, concurrency: 10 });
+    expect(readUploadConfig(folder)).toEqual(
+      expect.objectContaining({ immutable: true, concurrency: 10 }),
+    );
+  });
+
+  // uploadDir honours these too. A site setting dryRun, or an empty variants list, uploads
+  // nothing while the run reports success right up to the "folder is empty" check, which
+  // then blames the build.
+  it("should pin the other options uploadDir honours", () => {
+    expect(readUploadConfig(folder)).toEqual(
+      expect.objectContaining({ dryRun: false, skipRepeated: false }),
+    );
   });
 });
 
@@ -67,10 +78,15 @@ describe("when the built folder ships a config.yml", () => {
 
   // Same precedence as the pipeline: a site must not be able to widen these.
   it("should not let a site override immutable or concurrency", () => {
-    fs.writeFileSync(path.join(folder, "config.yml"), "immutable: false\nconcurrency: 99\n");
+    fs.writeFileSync(
+      path.join(folder, "config.yml"),
+      ["immutable: false", "concurrency: 99", "dryRun: true", "matches:", "  - match: '**/*'"].join(
+        "\n",
+      ),
+    );
 
     expect(readUploadConfig(folder)).toEqual(
-      expect.objectContaining({ immutable: true, concurrency: 10 }),
+      expect.objectContaining({ immutable: true, concurrency: 10, dryRun: false }),
     );
   });
 });
@@ -91,5 +107,33 @@ describe("when the config.yml cannot be read", () => {
     fs.writeFileSync(path.join(folder, "config.yml"), "matches: [oops\n  - broken");
 
     expect(() => readUploadConfig(folder)).toThrow(/excludes/);
+  });
+});
+
+describe("when the config.yml parses but carries no usable rules", () => {
+  /**
+   * The uploader only applies rules when `matches` is an array, so a one-letter typo, a
+   * scalar, or a top-level list all yield a config with NO rules — and a site relying on
+   * `ignore:` to keep files out of a public bucket loses that silently. Being fatal is the
+   * whole reason the file is read at all.
+   */
+  const cases: Array<[string, string]> = [
+    ["matches is misspelled", "mathces:\n  - match: 'a/**'"],
+    ["matches is not a list", "matches: not-a-list"],
+    ["the document is a list", "- match: 'a/**'"],
+    ["the document is a scalar", "just-a-string"],
+    ["a rule has no match string", "matches:\n  - ignore: true"],
+  ];
+
+  it.each(cases)("should refuse when %s", (_name, yaml) => {
+    fs.writeFileSync(path.join(folder, "config.yml"), yaml);
+
+    expect(() => readUploadConfig(folder)).toThrow(/apply none of them/);
+  });
+
+  it("should say the ignore rules would not be applied", () => {
+    fs.writeFileSync(path.join(folder, "config.yml"), "mathces:\n  - match: 'a/**'");
+
+    expect(() => readUploadConfig(folder)).toThrow(/ignore/);
   });
 });

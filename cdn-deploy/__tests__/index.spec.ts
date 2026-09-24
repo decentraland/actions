@@ -451,6 +451,27 @@ describe("when running the cdn-deploy action", () => {
       expect(core.setOutput).toHaveBeenCalledWith("mode", "skip");
     });
 
+    /**
+     * `force` means "write these bytes anyway". A published version cannot be written at
+     * all, so skipping would report success for a run that did the opposite of what was
+     * asked — and the docs promise force re-uploads past an existing version.
+     */
+    it("should fail rather than silently skip when force was set", async () => {
+      inputs = buildInputs({ distPath: "./dist", force: true, environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+
+      await expect(run()).rejects.toThrow(/immutable/);
+    });
+
+    it("should not roll out when force could not be honoured", async () => {
+      inputs = buildInputs({ distPath: "./dist", force: true, environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+
+      await run().catch(() => undefined);
+
+      expect(broker.rollout).not.toHaveBeenCalled();
+    });
+
     // Anything else from /credentials is a real failure and must not be swallowed.
     it("should still fail on any other broker refusal", async () => {
       broker.requestCredentials.mockRejectedValue(

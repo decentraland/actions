@@ -37,6 +37,40 @@ export async function uploadFolderToS3(opts: {
 const CONFIG_FILE = "config.yml";
 
 /**
+ * Refuse a config that parses but says nothing.
+ *
+ * `readConfiguration` returns whatever the YAML happened to be, and the uploader only acts
+ * on `matches` when it is an array — so `mathces:`, a string, or a top-level list all
+ * produce a config with no rules at all. That is the dangerous shape: a site using
+ * `ignore:` to keep files out of a public bucket loses the protection to a one-letter
+ * typo, silently. Being fatal here is the whole point of reading the file.
+ */
+function assertUsableConfig(parsed: unknown, configPath: string): void {
+  const bad = (why: string) => {
+    throw new Error(
+      `"${configPath}" ${why}. It must be a mapping with a \`matches\` list of rules — as written ` +
+        "the uploader would apply none of them, publishing files an `ignore` rule excludes.",
+    );
+  };
+
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+    bad("is not a mapping");
+
+  const matches = (parsed as { matches?: unknown }).matches;
+  if (matches === undefined) bad("has no `matches` list");
+  if (!Array.isArray(matches)) bad("has a `matches` that is not a list");
+  for (const rule of matches as unknown[]) {
+    if (
+      rule === null ||
+      typeof rule !== "object" ||
+      typeof (rule as { match?: unknown }).match !== "string"
+    ) {
+      bad("has a rule without a string `match`");
+    }
+  }
+}
+
+/**
  * Per-file upload rules, merged the way static-sites-pipeline merges them.
  *
  * A site can ship a `config.yml` at the root of its build declaring `contentType`,
@@ -49,15 +83,14 @@ const CONFIG_FILE = "config.yml";
  * the same precedence the pipeline uses.
  */
 export function readUploadConfig(folder: string): Record<string, unknown> {
-  const defaults = { immutable: true, concurrency: 10 };
+  const defaults = { immutable: true, concurrency: 10, dryRun: false, skipRepeated: false };
   const configPath = path.join(folder, CONFIG_FILE);
 
   if (!fs.existsSync(configPath)) return defaults;
 
+  let parsed: unknown;
   try {
-    const config = { ...readConfiguration(configPath), ...defaults };
-    core.info(`Using the upload rules from ${CONFIG_FILE}.`);
-    return config as Record<string, unknown>;
+    parsed = readConfiguration(configPath) as unknown;
   } catch (e) {
     // Deliberately fatal, unlike the pipeline, which falls back to the defaults and logs.
     // Silently dropping the rules is how a file marked `ignore` reaches a public bucket.
@@ -66,6 +99,18 @@ export function readUploadConfig(folder: string): Record<string, unknown> {
         "Fix the file or remove it — deploying without its rules would upload files it excludes " +
         "and strip the content types it sets.",
     );
+  }
+
+  assertUsableConfig(parsed, configPath);
+
+  {
+    // dryRun, skipRepeated and variants are pinned alongside immutable and concurrency:
+    // uploadDir honours all five, and a site setting dryRun or an empty variants list
+    // uploads nothing while the run still reports success up to the "folder is empty"
+    // check, which then blames the build.
+    const config = { ...(parsed as Record<string, unknown>), ...defaults };
+    core.info(`Using the upload rules from ${CONFIG_FILE}.`);
+    return config;
   }
 }
 
