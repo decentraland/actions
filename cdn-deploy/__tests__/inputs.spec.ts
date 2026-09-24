@@ -3,26 +3,19 @@ import * as os from "os";
 import * as path from "path";
 import * as core from "@actions/core";
 import {
-  DEFAULT_BUCKET,
   DEFAULT_CDN_BASE_URL,
   DEFAULT_ROLLOUT_NAME,
-  deriveDeploymentPath,
   folderHasIndexHtml,
   isEnvironment,
-  kvKeyForTarget,
   parseBooleanInput,
   parseEnvironments,
   parsePercentage,
   readInputs,
   readPackageJson,
-  resolveKvTargets,
-  resolveNamespace,
-  resolveTarget,
-  rolloutUrlForTarget,
   validateDistPath,
   validatePackageName,
 } from "../src/inputs";
-import { ActionInputs, DeploymentTarget, NamespaceMap } from "../src/types";
+import { ActionInputs, DEFAULT_BROKER_URL, DEFAULT_OIDC_AUDIENCE } from "../src/types";
 
 /** `@actions/core` reads `INPUT_<NAME>`: uppercased, spaces to `_`, hyphens kept. */
 function envNameFor(input: string): string {
@@ -394,65 +387,6 @@ describe("when validating the dist path", () => {
   });
 });
 
-describe("when deriving a deployment path from a package name", () => {
-  describe("and the name has a scope and a -site suffix", () => {
-    it("should strip both", () => {
-      expect(deriveDeploymentPath("@dcl/auth-site")).toBe("auth");
-    });
-  });
-
-  describe("and the name has a scope but no -site suffix", () => {
-    it("should strip only the scope", () => {
-      expect(deriveDeploymentPath("@dcl/sites")).toBe("sites");
-    });
-  });
-
-  describe("and the name has no scope and no -site suffix", () => {
-    it("should return the name unchanged", () => {
-      expect(deriveDeploymentPath("explorer")).toBe("explorer");
-    });
-  });
-});
-
-describe("when resolving the deployment target", () => {
-  describe("and a path is provided", () => {
-    it("should return a path target", () => {
-      expect(resolveTarget({ path: "auth", packageName: "@dcl/auth-site" })).toEqual({
-        kind: "path",
-        path: "auth",
-      });
-    });
-  });
-
-  describe("and a domain is provided", () => {
-    it("should return a domain target", () => {
-      expect(
-        resolveTarget({ domain: "play.decentraland.org", packageName: "@dcl/explorer" }),
-      ).toEqual({
-        kind: "domain",
-        domain: "play.decentraland.org",
-      });
-    });
-  });
-
-  describe("and neither path nor domain is provided", () => {
-    it("should derive the path from the package name", () => {
-      expect(resolveTarget({ packageName: "@dcl/account-site" })).toEqual({
-        kind: "path",
-        path: "account",
-      });
-    });
-  });
-
-  describe("and both path and domain are provided", () => {
-    it("should throw", () => {
-      expect(() =>
-        resolveTarget({ path: "auth", domain: "x.org", packageName: "@dcl/auth-site" }),
-      ).toThrow("Provide either `deployment-path` or `domain`, not both");
-    });
-  });
-});
-
 describe("when parsing the environments input", () => {
   describe("and it is a JSON array", () => {
     it("should parse the listed environments", () => {
@@ -521,88 +455,6 @@ describe("when parsing the environments input", () => {
   });
 });
 
-describe("when resolving the namespace id", () => {
-  let map: NamespaceMap;
-
-  beforeEach(() => {
-    map = { zone: "ns-zone" };
-  });
-
-  describe("and an explicit override is provided", () => {
-    it("should return the override", () => {
-      expect(resolveNamespace("org", map, "ns-override")).toBe("ns-override");
-    });
-  });
-
-  describe("and a per-environment value is provided", () => {
-    it("should return it", () => {
-      expect(resolveNamespace("zone", map)).toBe("ns-zone");
-    });
-  });
-
-  describe("and nothing is provided", () => {
-    it("should throw, naming the org secret to set", () => {
-      expect(() => resolveNamespace("org", {})).toThrow("CF_NS_ORG");
-    });
-  });
-});
-
-describe("when resolving KV targets", () => {
-  describe("and several environments are given", () => {
-    let map: NamespaceMap;
-
-    beforeEach(() => {
-      map = { zone: "ns-zone", today: "ns-today" };
-    });
-
-    it("should map each environment to its namespace id", () => {
-      expect(resolveKvTargets(["zone", "today"], map)).toEqual([
-        { environment: "zone", namespaceId: "ns-zone" },
-        { environment: "today", namespaceId: "ns-today" },
-      ]);
-    });
-  });
-
-  describe("and the environment list is empty", () => {
-    it("should return no targets (stage)", () => {
-      expect(resolveKvTargets([], {})).toEqual([]);
-    });
-  });
-
-  describe("and an environment has no namespace id", () => {
-    it("should throw naming the org secret to set", () => {
-      expect(() => resolveKvTargets(["zone", "org"], { zone: "ns-zone" })).toThrow("CF_NS_ORG");
-    });
-  });
-
-  describe("and an override is combined with a single environment", () => {
-    it("should use the override for that environment", () => {
-      expect(resolveKvTargets(["org"], {}, "ns-override")).toEqual([
-        { environment: "org", namespaceId: "ns-override" },
-      ]);
-    });
-  });
-
-  describe("and an override is combined with several environments", () => {
-    // Writing the same record to the same namespace twice is idempotent but
-    // pointless, so the duplicate is collapsed rather than rejected.
-    it("should write the shared namespace only once", () => {
-      expect(resolveKvTargets(["zone", "today"], {}, "ns-override")).toEqual([
-        { environment: "zone", namespaceId: "ns-override" },
-      ]);
-    });
-  });
-
-  describe("and two environments resolve to different namespaces", () => {
-    it("should keep both", () => {
-      expect(resolveKvTargets(["zone", "today"], { zone: "ns-a", today: "ns-b" })).toEqual([
-        { environment: "zone", namespaceId: "ns-a" },
-        { environment: "today", namespaceId: "ns-b" },
-      ]);
-    });
-  });
-});
-
 describe("when parsing the percentage", () => {
   describe("and the value is empty", () => {
     it("should default to 100", () => {
@@ -649,58 +501,6 @@ describe("when parsing the percentage", () => {
   describe("and the value is fractional", () => {
     it("should throw (percentages are integers)", () => {
       expect(() => parsePercentage("50.5")).toThrow('Invalid percentage "50.5"');
-    });
-  });
-});
-
-describe("when deriving the KV key from a target", () => {
-  describe("and the target is path-based", () => {
-    let target: DeploymentTarget;
-
-    beforeEach(() => {
-      target = { kind: "path", path: "auth" };
-    });
-
-    it("should use the path as the key", () => {
-      expect(kvKeyForTarget(target)).toBe("auth");
-    });
-  });
-
-  describe("and the target is domain-based", () => {
-    let target: DeploymentTarget;
-
-    beforeEach(() => {
-      target = { kind: "domain", domain: "play.decentraland.org" };
-    });
-
-    it("should use the domain as the key", () => {
-      expect(kvKeyForTarget(target)).toBe("play.decentraland.org");
-    });
-  });
-});
-
-describe("when building the rollout url for a target and environment", () => {
-  describe("and the target is path-based", () => {
-    let target: DeploymentTarget;
-
-    beforeEach(() => {
-      target = { kind: "path", path: "auth" };
-    });
-
-    it("should build a decentraland.<env>/<path> url", () => {
-      expect(rolloutUrlForTarget(target, "today")).toBe("https://decentraland.today/auth");
-    });
-  });
-
-  describe("and the target is domain-based", () => {
-    let target: DeploymentTarget;
-
-    beforeEach(() => {
-      target = { kind: "domain", domain: "play.decentraland.org" };
-    });
-
-    it("should build an https url for the domain ignoring the environment", () => {
-      expect(rolloutUrlForTarget(target, "org")).toBe("https://play.decentraland.org");
     });
   });
 });
@@ -797,13 +597,6 @@ describe("when reading the action inputs", () => {
     process.chdir(workspace);
     process.env.GITHUB_WORKSPACE = workspace;
     clearAllInputs();
-    setInputs({
-      "cloudflare-account-id": "account-id",
-      "cloudflare-api-token": "api-token",
-      "cloudflare-namespace-zone": "ns-zone",
-      "cloudflare-namespace-today": "ns-today",
-      "cloudflare-namespace-org": "ns-org",
-    });
     setSecretMock = jest.spyOn(core, "setSecret").mockImplementation(() => undefined);
   });
 
@@ -816,15 +609,34 @@ describe("when reading the action inputs", () => {
     jest.restoreAllMocks();
   });
 
+  describe("and both deployment-environments and deployment-environment are set", () => {
+    beforeEach(() => {
+      setInputs({ "deployment-environments": '["zone"]', "deployment-environment": "today" });
+    });
+
+    it("should refuse rather than silently pick one", () => {
+      expect(() => readInputs()).toThrow("not both");
+    });
+  });
+
+  describe("and both a dist-path and a source-version are given", () => {
+    beforeEach(() => {
+      fs.mkdirSync(path.join(workspace, "dist"));
+      setInputs({ "dist-path": "./dist", "source-version": "1.0.0" });
+    });
+
+    // Otherwise the folder the caller just built would be silently discarded in favour of
+    // copying bytes already in S3.
+    it("should refuse rather than discard the built folder", () => {
+      expect(() => readInputs()).toThrow("not both");
+    });
+  });
+
   describe("and only the credentials are provided", () => {
     let result: ActionInputs;
 
     beforeEach(() => {
       result = readInputs();
-    });
-
-    it("should default the S3 bucket to the shared CDN bucket", () => {
-      expect(result.s3Bucket).toBe(DEFAULT_BUCKET);
     });
 
     it("should default the CDN base url", () => {
@@ -833,10 +645,6 @@ describe("when reading the action inputs", () => {
 
     it("should default the rollout name to _site", () => {
       expect(result.deploymentName).toBe(DEFAULT_ROLLOUT_NAME);
-    });
-
-    it("should default the AWS region to us-east-1", () => {
-      expect(result.awsRegion).toBe("us-east-1");
     });
 
     it("should default the percentage to 100", () => {
@@ -863,19 +671,8 @@ describe("when reading the action inputs", () => {
       expect(result.environments).toEqual(["zone", "today"]);
     });
 
-    it("should resolve a KV target per default environment", () => {
-      expect(result.kvTargets).toEqual([
-        { environment: "zone", namespaceId: "ns-zone" },
-        { environment: "today", namespaceId: "ns-today" },
-      ]);
-    });
-
     it("should leave the dist path empty for copy and repoint flows", () => {
       expect(result.distPath).toBe("");
-    });
-
-    it("should derive the deployment target from the package name", () => {
-      expect(result.target).toEqual({ kind: "path", path: "auth" });
     });
 
     it("should read the package name from the repo-root package.json", () => {
@@ -884,14 +681,6 @@ describe("when reading the action inputs", () => {
 
     it("should read the base version from the repo-root package.json", () => {
       expect(result.baseVersion).toBe("1.2.3");
-    });
-
-    it("should mask the cloudflare api token", () => {
-      expect(setSecretMock).toHaveBeenCalledWith("api-token");
-    });
-
-    it("should mask every resolved namespace id", () => {
-      expect(setSecretMock).toHaveBeenCalledWith("ns-zone");
     });
   });
 
@@ -1022,18 +811,6 @@ describe("when reading the action inputs", () => {
     });
   });
 
-  describe("and both deployment-environments and deployment-environment are set", () => {
-    beforeEach(() => {
-      setInputs({ "deployment-environments": '["zone"]', "deployment-environment": "today" });
-    });
-
-    it("should throw asking for one of the two", () => {
-      expect(() => readInputs()).toThrow(
-        "Provide either `deployment-environments` or `deployment-environment`, not both.",
-      );
-    });
-  });
-
   describe("and only the singular deployment-environment is set", () => {
     let result: ActionInputs;
 
@@ -1084,26 +861,6 @@ describe("when reading the action inputs", () => {
     });
   });
 
-  describe("and the cloudflare account id is missing for a repointing run", () => {
-    beforeEach(() => {
-      unsetInputs(["cloudflare-account-id"]);
-    });
-
-    it("should throw saying the input is required", () => {
-      expect(() => readInputs()).toThrow("Input required and not supplied: cloudflare-account-id");
-    });
-  });
-
-  describe("and the cloudflare api token is missing for a repointing run", () => {
-    beforeEach(() => {
-      unsetInputs(["cloudflare-api-token"]);
-    });
-
-    it("should throw saying the input is required", () => {
-      expect(() => readInputs()).toThrow("Input required and not supplied: cloudflare-api-token");
-    });
-  });
-
   describe("and the run is stage only", () => {
     let result: ActionInputs;
 
@@ -1122,18 +879,6 @@ describe("when reading the action inputs", () => {
     it("should resolve with no environments", () => {
       expect(result.environments).toEqual([]);
     });
-
-    it("should resolve with no KV targets", () => {
-      expect(result.kvTargets).toEqual([]);
-    });
-
-    it("should not require the cloudflare account id", () => {
-      expect(result.cloudflareAccountId).toBe("");
-    });
-
-    it("should not require the cloudflare api token", () => {
-      expect(result.cloudflareApiToken).toBe("");
-    });
   });
 
   describe("and a single namespace override is combined with the default environments", () => {
@@ -1143,35 +888,9 @@ describe("when reading the action inputs", () => {
 
     // A single-namespace account is a legitimate setup; the duplicate write is
     // collapsed rather than rejected.
-    it("should collapse the default environments onto the one namespace", () => {
-      expect(readInputs().kvTargets).toEqual([{ environment: "zone", namespaceId: "ns-override" }]);
-    });
 
     it("should still report both environments for the rollout", () => {
       expect(readInputs().environments).toEqual(["zone", "today"]);
-    });
-  });
-
-  describe("and a domain is provided", () => {
-    let result: ActionInputs;
-
-    beforeEach(() => {
-      setInputs({ domain: "play.decentraland.org" });
-      result = readInputs();
-    });
-
-    it("should return a domain target", () => {
-      expect(result.target).toEqual({ kind: "domain", domain: "play.decentraland.org" });
-    });
-  });
-
-  describe("and both a domain and a deployment-path are provided", () => {
-    beforeEach(() => {
-      setInputs({ domain: "play.decentraland.org", "deployment-path": "auth" });
-    });
-
-    it("should throw asking for one of the two", () => {
-      expect(() => readInputs()).toThrow("Provide either `deployment-path` or `domain`, not both");
     });
   });
 
@@ -1238,14 +957,6 @@ describe("when reading the action inputs", () => {
 
     it("should return the commit", () => {
       expect(result.commit).toBe("abc1234");
-    });
-
-    it("should return the AWS region", () => {
-      expect(result.awsRegion).toBe("us-west-2");
-    });
-
-    it("should return the S3 bucket", () => {
-      expect(result.s3Bucket).toBe("my-bucket");
     });
 
     it("should return the CDN base url", () => {

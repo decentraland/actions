@@ -1,10 +1,10 @@
 import * as core from "@actions/core";
-import * as github from "@actions/github";
-import { patchRolloutInEnvironments } from "../src/cloudflare";
+import { BrokerError, createBrokerClient } from "../src/broker";
+import { createBrokeredCredentials } from "../src/credentials";
 import { createObservability } from "../src/github";
 import { reportFailure, run } from "../src/index";
 import { folderHasIndexHtml, readInputs } from "../src/inputs";
-import { copyFolderInS3, prefixExists, uploadFolderToS3 } from "../src/s3";
+import { uploadFolderToS3, writeCompletionMarker } from "../src/s3";
 import { notifyRollout } from "../src/slack";
 import { ActionInputs } from "../src/types";
 
@@ -12,8 +12,10 @@ jest.mock("@actions/core", () => ({
   setOutput: jest.fn(),
   setFailed: jest.fn(),
   info: jest.fn(),
+  debug: jest.fn(),
   warning: jest.fn(),
   group: jest.fn(),
+  setSecret: jest.fn(),
   summary: { addHeading: jest.fn(), addTable: jest.fn(), write: jest.fn() },
 }));
 jest.mock("@actions/github", () => ({ context: { sha: "" } }));
@@ -23,16 +25,21 @@ jest.mock("../src/inputs", () => ({
   folderHasIndexHtml: jest.fn(),
 }));
 jest.mock("../src/s3");
-jest.mock("../src/cloudflare");
+jest.mock("../src/broker", () => ({
+  ...jest.requireActual("../src/broker"),
+  createBrokerClient: jest.fn(),
+}));
+jest.mock("../src/credentials");
 jest.mock("../src/slack");
 jest.mock("../src/github");
 
 type SummaryMock = { addHeading: jest.Mock; addTable: jest.Mock; write: jest.Mock };
 type ObservabilityMock = { start: jest.Mock; succeed: jest.Mock; fail: jest.Mock };
+type BrokerMock = { requestCredentials: jest.Mock; release: jest.Mock; rollout: jest.Mock };
 
 describe("when running the cdn-deploy action", () => {
-  // `run()` is invoked at import time by src/index.ts; the mocks it touched
-  // there are cleared below so no test inherits that call.
+  // `run()` is invoked at import time by src/index.ts; clearAllMocks below wipes what that
+  // call touched so no test inherits it.
   const WORKFLOW_SHA = "abc1234def5678901234567890abcdef12345678";
   const COMMIT_INPUT_SHA = "feed1234567890abcdef1234567890abcdef1234";
   const PACKAGE_NAME = "@dcl/auth-site";
@@ -44,45 +51,57 @@ describe("when running the cdn-deploy action", () => {
       distPath: "",
       packageName: PACKAGE_NAME,
       baseVersion: "1.0.0",
-      target: { kind: "path", path: "auth" },
       environments: ["zone", "today"],
-      kvTargets: [
-        { environment: "zone", namespaceId: "kv-namespace-zone" },
-        { environment: "today", namespaceId: "kv-namespace-today" },
-      ],
       deploymentName: "_site",
       percentage: 100,
       requireIndex: true,
       force: false,
       copyFromCommit: false,
-      awsRegion: "us-east-1",
-      s3Bucket: "cdn-test-bucket",
-      cloudflareAccountId: "cf-test-account",
-      cloudflareApiToken: "cf-test-token",
       createGithubDeployment: false,
       cdnBaseUrl: "https://cdn.decentraland.org",
+      brokerUrl: "https://cdn-deploy.decentraland.org",
+      oidcAudience: "dcl-cdn-deploy",
       ...overrides,
+    };
+  }
+
+  function grant(targetExists: boolean) {
+    return {
+      bucket: "cdn-test-bucket",
+      region: "us-east-1",
+      prefix: `${PACKAGE_NAME}/${COMMIT_VERSION}/`,
+      targetExists,
+      credentials: { accessKeyId: "AKIA", secretAccessKey: "s", sessionToken: "t" },
+      expiresInSeconds: 900,
+    };
+  }
+
+  function rolloutResult(environment: string) {
+    return {
+      key: "auth",
+      environment,
+      rolloutName: "_site",
+      version: COMMIT_VERSION,
+      percentage: 100,
+      url: `https://decentraland.${environment}/auth`,
     };
   }
 
   let readInputsMock: jest.MockedFunction<typeof readInputs>;
   let folderHasIndexHtmlMock: jest.MockedFunction<typeof folderHasIndexHtml>;
-  let prefixExistsMock: jest.MockedFunction<typeof prefixExists>;
   let uploadFolderToS3Mock: jest.MockedFunction<typeof uploadFolderToS3>;
-  let copyFolderInS3Mock: jest.MockedFunction<typeof copyFolderInS3>;
-  let patchRolloutInEnvironmentsMock: jest.MockedFunction<typeof patchRolloutInEnvironments>;
+  let writeCompletionMarkerMock: jest.MockedFunction<typeof writeCompletionMarker>;
   let notifyRolloutMock: jest.MockedFunction<typeof notifyRollout>;
   let createObservabilityMock: jest.MockedFunction<typeof createObservability>;
   let setOutputMock: jest.Mock;
   let groupMock: jest.Mock;
   let summaryMock: SummaryMock;
   let observability: ObservabilityMock;
+  let broker: BrokerMock;
   let inputs: ActionInputs;
 
   beforeEach(() => {
     jest.clearAllMocks();
-
-    (github.context as unknown as { sha: string }).sha = WORKFLOW_SHA;
 
     setOutputMock = core.setOutput as unknown as jest.Mock;
     groupMock = core.group as unknown as jest.Mock;
@@ -93,317 +112,417 @@ describe("when running the cdn-deploy action", () => {
     summaryMock.addTable.mockReturnValue(summaryMock);
     summaryMock.write.mockResolvedValue(summaryMock);
 
-    observability = {
-      start: jest.fn().mockResolvedValue(undefined),
-      succeed: jest.fn().mockResolvedValue(undefined),
-      fail: jest.fn().mockResolvedValue(undefined),
-    };
-    createObservabilityMock = jest.mocked(createObservability);
-    createObservabilityMock.mockReturnValue(observability);
+    observability = { start: jest.fn(), succeed: jest.fn(), fail: jest.fn() };
+    createObservabilityMock = createObservability as jest.MockedFunction<
+      typeof createObservability
+    >;
+    createObservabilityMock.mockReturnValue(observability as never);
 
-    readInputsMock = jest.mocked(readInputs);
-    folderHasIndexHtmlMock = jest.mocked(folderHasIndexHtml);
-    folderHasIndexHtmlMock.mockReturnValue(true);
+    broker = { requestCredentials: jest.fn(), release: jest.fn(), rollout: jest.fn() };
+    (createBrokerClient as jest.Mock).mockReturnValue(broker);
+    (createBrokeredCredentials as jest.Mock).mockReturnValue({ accessKeyId: "AKIA" });
 
-    prefixExistsMock = jest.mocked(prefixExists);
-    prefixExistsMock.mockResolvedValue(false);
-    uploadFolderToS3Mock = jest.mocked(uploadFolderToS3);
-    uploadFolderToS3Mock.mockResolvedValue(["index.html", "index.html.br"]);
-    copyFolderInS3Mock = jest.mocked(copyFolderInS3);
-    copyFolderInS3Mock.mockResolvedValue(12);
+    readInputsMock = readInputs as jest.MockedFunction<typeof readInputs>;
+    folderHasIndexHtmlMock = folderHasIndexHtml as jest.MockedFunction<typeof folderHasIndexHtml>;
+    uploadFolderToS3Mock = uploadFolderToS3 as jest.MockedFunction<typeof uploadFolderToS3>;
+    writeCompletionMarkerMock = writeCompletionMarker as jest.MockedFunction<
+      typeof writeCompletionMarker
+    >;
+    notifyRolloutMock = notifyRollout as jest.MockedFunction<typeof notifyRollout>;
 
-    patchRolloutInEnvironmentsMock = jest.mocked(patchRolloutInEnvironments);
-    patchRolloutInEnvironmentsMock.mockResolvedValue(["zone", "today"]);
-    notifyRolloutMock = jest.mocked(notifyRollout);
-    notifyRolloutMock.mockResolvedValue(undefined);
+    broker.rollout.mockImplementation(async ({ environment }: { environment: string }) =>
+      rolloutResult(environment),
+    );
 
-    inputs = buildInputs();
-    readInputsMock.mockReturnValue(inputs);
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const github = require("@actions/github");
+    github.context.sha = WORKFLOW_SHA;
   });
 
-  afterEach(() => {
-    jest.resetAllMocks();
-  });
-
-  describe("and a push deploys a freshly built folder that is not yet in S3", () => {
+  describe("and a commit build is deployed", () => {
     beforeEach(() => {
-      inputs = buildInputs({ distPath: "dist" });
+      inputs = buildInputs({ distPath: "./dist" });
       readInputsMock.mockReturnValue(inputs);
-      prefixExistsMock.mockResolvedValue(false);
-      uploadFolderToS3Mock.mockResolvedValue(["index.html", "index.html.br", "main.js"]);
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
     });
 
-    it("should upload the built folder to the commit-version prefix of the CDN bucket", async () => {
+    it("should upload the folder", async () => {
       await run();
 
-      expect(uploadFolderToS3Mock).toHaveBeenCalledWith({
-        region: "us-east-1",
-        bucket: "cdn-test-bucket",
-        folder: "dist",
-        remoteFolder: PACKAGE_NAME + "/" + COMMIT_VERSION,
-      });
+      expect(uploadFolderToS3Mock).toHaveBeenCalledTimes(1);
     });
 
-    it("should repoint every configured KV namespace at the commit version", async () => {
+    it("should upload into the bucket and prefix the broker granted", async () => {
       await run();
 
-      expect(patchRolloutInEnvironmentsMock).toHaveBeenCalledWith(
+      expect(uploadFolderToS3Mock).toHaveBeenCalledWith(
         expect.objectContaining({
-          accountId: "cf-test-account",
-          apiToken: "cf-test-token",
-        }),
-        inputs.kvTargets,
-        expect.objectContaining({
-          key: "auth",
-          rolloutName: "_site",
-          percentage: 100,
-          prefix: PACKAGE_NAME,
-          version: COMMIT_VERSION,
+          bucket: "cdn-test-bucket",
+          remoteFolder: `${PACKAGE_NAME}/${COMMIT_VERSION}`,
         }),
       );
     });
 
-    it("should publish an upload mode output", async () => {
+    // The marker is what makes the prefix eligible for a rollout, so a crashed upload
+    // leaves something the broker refuses to publish.
+    it("should write the completion marker", async () => {
+      await run();
+
+      expect(writeCompletionMarkerMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("should record how many objects it wrote in the marker", async () => {
+      uploadFolderToS3Mock.mockResolvedValue(["a", "b", "c"]);
+
+      await run();
+
+      expect(writeCompletionMarkerMock).toHaveBeenCalledWith(
+        expect.objectContaining({ marker: expect.objectContaining({ objectCount: 3 }) }),
+      );
+    });
+
+    it("should report the upload in the mode output", async () => {
       await run();
 
       expect(setOutputMock).toHaveBeenCalledWith("mode", "upload");
     });
+
+    it("should roll out to every requested environment", async () => {
+      await run();
+
+      expect(broker.rollout).toHaveBeenCalledTimes(2);
+    });
   });
 
-  describe("and the same commit is deployed again with the bytes already in S3", () => {
+  describe("and the same commit is deployed again", () => {
     beforeEach(() => {
-      inputs = buildInputs({ distPath: "dist" });
+      inputs = buildInputs({ distPath: "./dist" });
       readInputsMock.mockReturnValue(inputs);
-      prefixExistsMock.mockResolvedValue(true);
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      broker.requestCredentials.mockResolvedValue(grant(true));
     });
 
-    it("should write nothing to S3, neither uploading nor copying", async () => {
+    it("should not upload again", async () => {
       await run();
 
       expect(uploadFolderToS3Mock).not.toHaveBeenCalled();
-      expect(copyFolderInS3Mock).not.toHaveBeenCalled();
     });
 
-    it("should still repoint the KV at the commit version", async () => {
+    it("should still roll out", async () => {
       await run();
 
-      expect(patchRolloutInEnvironmentsMock).toHaveBeenCalledWith(
-        expect.anything(),
-        inputs.kvTargets,
-        expect.objectContaining({ version: COMMIT_VERSION }),
-      );
+      expect(broker.rollout).toHaveBeenCalledTimes(2);
     });
 
-    it("should publish a skip mode output", async () => {
+    it("should report the skip", async () => {
       await run();
 
       expect(setOutputMock).toHaveBeenCalledWith("mode", "skip");
     });
   });
 
-  describe("and a release copies the commit build into a release version, staging only", () => {
+  describe("and a release is being staged", () => {
     beforeEach(() => {
-      inputs = buildInputs({
-        distPath: "",
-        version: RELEASE_VERSION,
-        copyFromCommit: true,
-        environments: [],
-        kvTargets: [],
-      });
+      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      prefixExistsMock.mockResolvedValue(false);
-      copyFolderInS3Mock.mockResolvedValue(42);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.release.mockResolvedValue({ complete: true, copied: 12, objectCount: 12 });
     });
 
-    it("should server-side copy from the commit-version prefix into the release prefix", async () => {
+    it("should ask the broker to copy rather than upload", async () => {
       await run();
 
-      expect(copyFolderInS3Mock).toHaveBeenCalledWith({
-        region: "us-east-1",
-        bucket: "cdn-test-bucket",
-        sourceFolder: PACKAGE_NAME + "/" + COMMIT_VERSION,
-        targetFolder: PACKAGE_NAME + "/" + RELEASE_VERSION,
-      });
+      expect(broker.release).toHaveBeenCalledWith(
+        expect.objectContaining({ version: RELEASE_VERSION, sourceVersion: COMMIT_VERSION }),
+      );
     });
 
-    it("should leave the KV untouched because no environment was requested", async () => {
+    it("should not upload anything from the runner", async () => {
       await run();
 
-      expect(patchRolloutInEnvironmentsMock).not.toHaveBeenCalled();
+      expect(uploadFolderToS3Mock).not.toHaveBeenCalled();
     });
 
-    it("should publish a copy mode output", async () => {
+    it("should not roll out, since no environment was requested", async () => {
+      await run();
+
+      expect(broker.rollout).not.toHaveBeenCalled();
+    });
+
+    it("should report the copy", async () => {
       await run();
 
       expect(setOutputMock).toHaveBeenCalledWith("mode", "copy");
     });
   });
 
-  describe("and a repoint targets a version that is already in S3", () => {
+  describe("and the release copy needs more than one call", () => {
     beforeEach(() => {
-      inputs = buildInputs({ distPath: "", version: RELEASE_VERSION });
+      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      prefixExistsMock.mockResolvedValue(true);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.release
+        .mockResolvedValueOnce({ complete: false, copied: 640, continuation: "tok-1" })
+        .mockResolvedValueOnce({ complete: false, copied: 1280, continuation: "tok-2" })
+        .mockResolvedValueOnce({ complete: true, copied: 1500, objectCount: 1500 });
     });
 
-    it("should write nothing to S3, neither uploading nor copying", async () => {
+    it("should keep calling until the copy reports complete", async () => {
       await run();
 
-      expect(uploadFolderToS3Mock).not.toHaveBeenCalled();
-      expect(copyFolderInS3Mock).not.toHaveBeenCalled();
+      expect(broker.release).toHaveBeenCalledTimes(3);
     });
 
-    it("should repoint the KV at the requested version", async () => {
+    it("should pass the continuation token back", async () => {
       await run();
 
-      expect(patchRolloutInEnvironmentsMock).toHaveBeenCalledWith(
-        expect.anything(),
-        inputs.kvTargets,
-        expect.objectContaining({ version: RELEASE_VERSION }),
+      expect(broker.release).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ continuation: "tok-1" }),
+      );
+    });
+  });
+
+  describe("and the source build has not finished uploading yet", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      // retryAfter 0 keeps the test fast; what is under test is that it waits and retries
+      // rather than failing, not how long it waits.
+      broker.release
+        .mockRejectedValueOnce(new BrokerError("source_not_ready", 409, "still uploading", {}, 0))
+        .mockRejectedValueOnce(new BrokerError("source_not_ready", 409, "still uploading", {}, 0))
+        .mockResolvedValueOnce({ complete: true, copied: 5, objectCount: 5 });
+    });
+
+    // A release routinely races the commit build that produced its source, so this is a
+    // wait rather than a failure.
+    it("should keep waiting until the source is ready", async () => {
+      await run();
+
+      expect(broker.release).toHaveBeenCalledTimes(3);
+    });
+
+    it("should complete the release once it is", async () => {
+      await run();
+
+      expect(setOutputMock).toHaveBeenCalledWith("mode", "copy");
+    });
+  });
+
+  describe("and the release fails for a reason other than a missing source", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.release.mockRejectedValue(
+        new BrokerError("version_tag_mismatch", 403, "not your tag", {}),
       );
     });
 
-    it("should publish a skip mode output", async () => {
+    it("should fail rather than retry forever", async () => {
+      await expect(run()).rejects.toThrow("not your tag");
+    });
+
+    // The code travels on the error; reportFailure is what prefixes it into the message
+    // the user sees, which is asserted separately below.
+    it("should carry the broker's code", async () => {
+      await expect(run()).rejects.toMatchObject({ code: "version_tag_mismatch" });
+    });
+  });
+
+  describe("and the upload needs fresh credentials mid-flight", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ distPath: "./dist" });
+      readInputsMock.mockReturnValue(inputs);
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
+    });
+
+    // The 15-minute session is AssumeRole's floor, so a long upload has to be able to mint
+    // a new one rather than failing at the edge.
+    it("should give the credentials a way to fetch a fresh grant", async () => {
       await run();
 
-      expect(setOutputMock).toHaveBeenCalledWith("mode", "skip");
+      const options = (createBrokeredCredentials as jest.Mock).mock.calls[0][0];
+      await options.fetchGrant();
+
+      expect(broker.requestCredentials).toHaveBeenCalledTimes(2);
+    });
+
+    it("should hand back the credentials from that grant", async () => {
+      await run();
+
+      const options = (createBrokeredCredentials as jest.Mock).mock.calls[0][0];
+
+      await expect(options.fetchGrant()).resolves.toEqual(grant(false).credentials);
     });
   });
 
-  describe("and a repoint targets a version that is absent from S3 with nothing to fill it", () => {
+  describe("and a version is repointed without writing anything", () => {
     beforeEach(() => {
-      inputs = buildInputs({ distPath: "", version: RELEASE_VERSION, copyFromCommit: false });
+      inputs = buildInputs({ version: RELEASE_VERSION });
       readInputsMock.mockReturnValue(inputs);
-      prefixExistsMock.mockResolvedValue(false);
     });
 
-    it("should reject explaining the target version cannot be populated", async () => {
-      await expect(run()).rejects.toThrow(/is not in S3 and there is nothing to populate it with/);
+    // Nothing is written, so there is nothing to grant. The broker checks the bytes exist
+    // before it touches the rollout record, which is the authoritative check anyway.
+    it("should not ask for credentials", async () => {
+      await run();
+
+      expect(broker.requestCredentials).not.toHaveBeenCalled();
     });
 
-    it("should never repoint the KV at a version whose bytes are not there", async () => {
-      await expect(run()).rejects.toThrow();
+    it("should still roll out", async () => {
+      await run();
 
-      expect(patchRolloutInEnvironmentsMock).not.toHaveBeenCalled();
+      expect(broker.rollout).toHaveBeenCalledTimes(2);
     });
   });
 
-  describe("and the built folder produces no uploaded objects", () => {
+  describe("and the built folder turns out to be empty", () => {
     beforeEach(() => {
-      inputs = buildInputs({ distPath: "dist" });
+      inputs = buildInputs({ distPath: "./dist" });
       readInputsMock.mockReturnValue(inputs);
-      prefixExistsMock.mockResolvedValue(false);
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      broker.requestCredentials.mockResolvedValue(grant(false));
       uploadFolderToS3Mock.mockResolvedValue([]);
     });
 
-    it("should reject explaining the folder is empty", async () => {
-      await expect(run()).rejects.toThrow(/the folder is empty/);
+    it("should fail rather than publish nothing", async () => {
+      await expect(run()).rejects.toThrow("the folder is empty");
     });
 
-    it("should never repoint the KV at an empty prefix", async () => {
+    it("should not roll out", async () => {
       await expect(run()).rejects.toThrow();
 
-      expect(patchRolloutInEnvironmentsMock).not.toHaveBeenCalled();
+      expect(broker.rollout).not.toHaveBeenCalled();
+    });
+
+    it("should not write a completion marker", async () => {
+      await expect(run()).rejects.toThrow();
+
+      expect(writeCompletionMarkerMock).not.toHaveBeenCalled();
     });
   });
 
-  describe("and the built folder has no index.html while require-index is on", () => {
+  describe("and the build has no index.html", () => {
     beforeEach(() => {
-      inputs = buildInputs({ distPath: "dist", requireIndex: true });
+      inputs = buildInputs({ distPath: "./dist" });
       readInputsMock.mockReturnValue(inputs);
       folderHasIndexHtmlMock.mockReturnValue(false);
     });
 
-    it("should reject pointing at the missing index.html", async () => {
-      await expect(run()).rejects.toThrow(/No index.html found at the root of "dist"/);
-    });
+    it("should fail before asking for credentials", async () => {
+      await expect(run()).rejects.toThrow("No index.html");
 
-    it("should reject before touching S3 at all", async () => {
-      await expect(run()).rejects.toThrow();
-
-      expect(prefixExistsMock).not.toHaveBeenCalled();
-      expect(uploadFolderToS3Mock).not.toHaveBeenCalled();
+      expect(broker.requestCredentials).not.toHaveBeenCalled();
     });
   });
 
-  describe("and the Slack notification fails after the deploy landed", () => {
+  describe("and the index guard is disabled for a non-HTML bundle", () => {
     beforeEach(() => {
-      inputs = buildInputs({
-        distPath: "dist",
-        slackWebhook: "https://hooks.example.com/services/T000/B000/xxxx",
+      inputs = buildInputs({ distPath: "./dist", requireIndex: false });
+      readInputsMock.mockReturnValue(inputs);
+      folderHasIndexHtmlMock.mockReturnValue(false);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      uploadFolderToS3Mock.mockResolvedValue(["bundle.js"]);
+    });
+
+    it("should upload a folder with no index.html", async () => {
+      await run();
+
+      expect(uploadFolderToS3Mock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("and one environment fails to roll out", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ distPath: "./dist" });
+      readInputsMock.mockReturnValue(inputs);
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
+      broker.rollout.mockImplementation(async ({ environment }: { environment: string }) => {
+        if (environment === "today") throw new Error("kv unavailable");
+        return rolloutResult(environment);
       });
-      readInputsMock.mockReturnValue(inputs);
-      notifyRolloutMock.mockRejectedValue(new Error("Slack notification failed (500)"));
     });
 
-    it("should still resolve because Slack is never a reason to fail a landed deploy", async () => {
-      await expect(run()).resolves.toBeUndefined();
+    it("should fail the run", async () => {
+      await expect(run()).rejects.toThrow("Rollout failed for: today");
     });
 
-    it("should report the deploy as succeeded to observability", async () => {
-      await run();
+    // A partial rollout is possible and has to be visible rather than hidden behind an
+    // abort on the first failure.
+    it("should name the environment that did succeed", async () => {
+      await expect(run()).rejects.toThrow("Already updated: zone");
+    });
 
-      expect(observability.succeed).toHaveBeenCalled();
+    it("should mark the deploy failed", async () => {
+      await expect(run()).rejects.toThrow();
+
+      expect(observability.fail).toHaveBeenCalledTimes(1);
     });
   });
 
-  describe("and the KV repoint fails for one of the environments", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ distPath: "dist" });
-      readInputsMock.mockReturnValue(inputs);
-      patchRolloutInEnvironmentsMock.mockRejectedValue(
-        new Error('Rollout partially applied. Updated: zone. Failed: today ("403")'),
-      );
-    });
-
-    it("should reject with the partial-write error", async () => {
-      await expect(run()).rejects.toThrow(/Rollout partially applied/);
-    });
-
-    it("should report the deploy as failed to observability", async () => {
-      await expect(run()).rejects.toThrow();
-
-      expect(observability.fail).toHaveBeenCalled();
-    });
-
-    it("should have published the mode output before the KV write, so a downstream step can tell the bytes were written", async () => {
-      await expect(run()).rejects.toThrow();
-
-      expect(setOutputMock).toHaveBeenCalledWith("mode", "upload");
-    });
-
-    it("should still write the job summary so a half-applied deploy is visible", async () => {
-      await expect(run()).rejects.toThrow();
-
-      expect(summaryMock.write).toHaveBeenCalled();
-    });
-  });
-
-  describe("and a commit input selects a commit other than the workflow's", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ distPath: "dist", commit: COMMIT_INPUT_SHA });
-      readInputsMock.mockReturnValue(inputs);
-    });
-
-    it("should thread the resolved commit sha, not the workflow sha, into observability", async () => {
-      await run();
-
-      expect(createObservabilityMock).toHaveBeenCalledWith(
-        expect.objectContaining({ sha: COMMIT_INPUT_SHA, version: "1.0.0-commit-feed123" }),
-      );
-    });
-  });
-  // The mutation survey found these unasserted: every one of the behaviours
-  // below could be deleted outright and the rest of the suite stayed green.
-  describe("and the run reports its results", () => {
+  describe("and Slack is configured", () => {
     beforeEach(() => {
       inputs = buildInputs({ distPath: "./dist", slackWebhook: "https://hooks.slack.com/x" });
       readInputsMock.mockReturnValue(inputs);
       folderHasIndexHtmlMock.mockReturnValue(true);
-      prefixExistsMock.mockResolvedValue(false);
+      broker.requestCredentials.mockResolvedValue(grant(false));
       uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
-      patchRolloutInEnvironmentsMock.mockResolvedValue(["zone", "today"]);
       notifyRolloutMock.mockResolvedValue(undefined);
+    });
+
+    it("should notify once per environment", async () => {
+      await run();
+
+      expect(notifyRolloutMock).toHaveBeenCalledTimes(2);
+    });
+
+    // The broker returns the URL because it is the thing that knows which key the rollout
+    // landed on.
+    it("should link each message to the url the broker reported", async () => {
+      await run();
+
+      expect(notifyRolloutMock.mock.calls.map((call) => call[0].url)).toEqual([
+        "https://decentraland.zone/auth",
+        "https://decentraland.today/auth",
+      ]);
+    });
+
+    describe("and the notification fails", () => {
+      beforeEach(() => {
+        notifyRolloutMock.mockRejectedValue(new Error("slack down"));
+      });
+
+      it("should warn rather than fail a deploy that already landed", async () => {
+        await run();
+
+        expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Slack"));
+      });
+
+      it("should still mark the deploy successful", async () => {
+        await run();
+
+        expect(observability.succeed).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe("and the run reports its results", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ distPath: "./dist" });
+      readInputsMock.mockReturnValue(inputs);
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
     });
 
     it("should publish the deployed version", async () => {
@@ -412,7 +531,7 @@ describe("when running the cdn-deploy action", () => {
       expect(setOutputMock).toHaveBeenCalledWith("version", COMMIT_VERSION);
     });
 
-    it("should publish the S3 prefix that was written", async () => {
+    it("should publish the S3 prefix", async () => {
       await run();
 
       expect(setOutputMock).toHaveBeenCalledWith("s3-path", `${PACKAGE_NAME}/${COMMIT_VERSION}`);
@@ -427,34 +546,10 @@ describe("when running the cdn-deploy action", () => {
       );
     });
 
-    it("should probe the target prefix in the configured region and bucket", async () => {
-      await run();
-
-      expect(prefixExistsMock).toHaveBeenCalledWith({
-        region: "us-east-1",
-        bucket: "cdn-test-bucket",
-        prefix: `${PACKAGE_NAME}/${COMMIT_VERSION}`,
-      });
-    });
-
     it("should open the deployment before doing any work", async () => {
       await run();
 
       expect(observability.start).toHaveBeenCalledTimes(1);
-    });
-
-    it("should stamp the rollout with the current time", async () => {
-      await run();
-
-      const [, , params] = patchRolloutInEnvironmentsMock.mock.calls[0];
-      expect(params.timestamp).toBeGreaterThan(0);
-    });
-
-    it("should surface KV retry warnings in the log", async () => {
-      await run();
-
-      const [account] = patchRolloutInEnvironmentsMock.mock.calls[0];
-      expect(typeof account.onRetry).toBe("function");
     });
 
     it("should record what the S3 step did in the job summary", async () => {
@@ -462,101 +557,31 @@ describe("when running the cdn-deploy action", () => {
 
       expect(summaryMock.addTable).toHaveBeenCalledWith(expect.arrayContaining([["S3", "upload"]]));
     });
-  });
 
-  describe("and Slack is configured", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ distPath: "./dist", slackWebhook: "https://hooks.slack.com/x" });
-      readInputsMock.mockReturnValue(inputs);
-      folderHasIndexHtmlMock.mockReturnValue(true);
-      prefixExistsMock.mockResolvedValue(false);
-      uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
-      patchRolloutInEnvironmentsMock.mockResolvedValue(["zone", "today"]);
-      notifyRolloutMock.mockResolvedValue(undefined);
-    });
-
-    it("should notify once per repointed environment", async () => {
+    it("should point the broker client at the configured url", async () => {
       await run();
 
-      expect(notifyRolloutMock).toHaveBeenCalledTimes(2);
-    });
-
-    it("should link each message to that environment's own url", async () => {
-      await run();
-
-      expect(notifyRolloutMock.mock.calls.map((call) => call[0].url)).toEqual([
-        "https://decentraland.zone/auth",
-        "https://decentraland.today/auth",
-      ]);
-    });
-
-    it("should report the deployed version in the message", async () => {
-      await run();
-
-      expect(notifyRolloutMock).toHaveBeenCalledWith(
-        expect.objectContaining({ version: COMMIT_VERSION, prefix: PACKAGE_NAME }),
+      expect(createBrokerClient).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrl: "https://cdn-deploy.decentraland.org",
+          audience: "dcl-cdn-deploy",
+        }),
       );
     });
-
-    describe("and the notification fails", () => {
-      beforeEach(() => {
-        notifyRolloutMock.mockRejectedValue(new Error("slack down"));
-      });
-
-      it("should warn rather than stay silent", async () => {
-        await run();
-
-        expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Slack"));
-      });
-
-      it("should still mark the deploy successful", async () => {
-        await run();
-
-        expect(observability.succeed).toHaveBeenCalledTimes(1);
-      });
-    });
   });
 
-  describe("and the index guard is disabled for a non-HTML bundle", () => {
+  describe("and a specific commit is being deployed", () => {
     beforeEach(() => {
-      inputs = buildInputs({ distPath: "./dist", requireIndex: false });
+      inputs = buildInputs({ commit: COMMIT_INPUT_SHA });
       readInputsMock.mockReturnValue(inputs);
-      folderHasIndexHtmlMock.mockReturnValue(false);
-      prefixExistsMock.mockResolvedValue(false);
-      uploadFolderToS3Mock.mockResolvedValue(["bundle.js"]);
-      patchRolloutInEnvironmentsMock.mockResolvedValue(["zone", "today"]);
     });
 
-    // The documented escape hatch for asset bundles — dropping requireIndex
-    // from the guard would hard-fail every one of these deploys.
-    it("should upload a folder with no index.html", async () => {
+    it("should attribute the deployment to that commit", async () => {
       await run();
 
-      expect(uploadFolderToS3Mock).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe("and a built folder is combined with the release copy flag", () => {
-    beforeEach(() => {
-      inputs = buildInputs({
-        distPath: "./dist",
-        version: RELEASE_VERSION,
-        copyFromCommit: true,
-      });
-      readInputsMock.mockReturnValue(inputs);
-      folderHasIndexHtmlMock.mockReturnValue(true);
-      prefixExistsMock.mockResolvedValue(false);
-      uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
-      patchRolloutInEnvironmentsMock.mockResolvedValue(["zone", "today"]);
-    });
-
-    // Guards the original production bug at the orchestration level, not just
-    // in the pure planner: the folder the caller built must win.
-    it("should upload the folder rather than copy the commit's build", async () => {
-      await run();
-
-      expect(uploadFolderToS3Mock).toHaveBeenCalledTimes(1);
-      expect(copyFolderInS3Mock).not.toHaveBeenCalled();
+      expect(createObservabilityMock).toHaveBeenCalledWith(
+        expect.objectContaining({ sha: COMMIT_INPUT_SHA, version: "1.0.0-commit-feed123" }),
+      );
     });
   });
 
@@ -571,6 +596,18 @@ describe("when running the cdn-deploy action", () => {
       reportFailure("plain string");
 
       expect(core.setFailed).toHaveBeenCalledWith("plain string");
+    });
+
+    // The broker's code names the thing to fix, so it leads the message a user reads in
+    // the workflow log.
+    it("should lead with the broker's code when the broker refused", () => {
+      reportFailure(
+        new BrokerError("repository_mismatch", 403, "belongs to decentraland/auth", {}),
+      );
+
+      expect(core.setFailed).toHaveBeenCalledWith(
+        "[repository_mismatch] belongs to decentraland/auth",
+      );
     });
   });
 });

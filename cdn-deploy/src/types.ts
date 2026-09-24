@@ -2,22 +2,12 @@
 export type Environment = "zone" | "today" | "org";
 
 /**
- * The KV key the rollout is written under. Mirrors `webhooks-receiver`'s
- * `changeRollout`: either a path (path-based sites, e.g. `auth`) or a full
- * domain. The environment(s) select which Cloudflare KV namespace(s) receive
- * the write.
+ * NOTE: the KV key is no longer resolved here. Which key a package may write is an
+ * authorisation decision — it decides whose site this deploy replaces — so it is made by
+ * the broker from `@decentraland/definitions`, where the repository that owns each package
+ * is recorded. Accepting a caller-supplied path or domain would let any authorised
+ * repository repoint another team's site.
  */
-export type DeploymentTarget = { kind: "path"; path: string } | { kind: "domain"; domain: string };
-
-/** Per-environment Cloudflare KV namespace ids (the `CF_ROLLOUTS__*_NAMESPACE` values). */
-export type NamespaceMap = {
-  zone?: string;
-  today?: string;
-  org?: string;
-};
-
-/** A resolved KV write target: which namespace, for which environment. */
-export type KvTarget = { environment: Environment; namespaceId: string };
 
 /** What the state-aware S3 step should do for the target version. */
 export type S3Action = "upload" | "copy" | "skip";
@@ -34,11 +24,8 @@ export type ActionInputs = {
   distPath: string;
   packageName: string;
   baseVersion: string;
-  target: DeploymentTarget;
   /** Environments whose KV gets repointed. Empty = stage only (S3, no KV). */
   environments: Environment[];
-  /** `environments` resolved to namespace ids. */
-  kvTargets: KvTarget[];
   deploymentName: string;
   percentage: number;
   /** Explicit target version (e.g. a release tag). Defaults to the commit version. */
@@ -57,11 +44,31 @@ export type ActionInputs = {
    * a `version` that is merely absent fails instead of being silently filled.
    */
   copyFromCommit: boolean;
-  awsRegion: string;
-  s3Bucket: string;
-  cloudflareAccountId: string;
-  cloudflareApiToken: string;
   slackWebhook?: string;
   createGithubDeployment: boolean;
   cdnBaseUrl: string;
+  /** The deploy broker's base URL. */
+  brokerUrl: string;
+  /** Audience requested on the OIDC token; the broker verifies it. */
+  oidcAudience: string;
 };
+
+/** Minimal `node-fetch` shape, narrowed to what the broker client needs. */
+export type FetchLike = (
+  url: string,
+  init?: { method?: string; headers?: Record<string, string>; body?: string },
+) => Promise<{
+  ok: boolean;
+  status: number;
+  headers?: { get(name: string): string | null };
+  text(): Promise<string>;
+}>;
+
+/** Written last by an upload; the broker refuses to roll out a prefix without it. */
+export const COMPLETION_MARKER_FILENAME = ".deploy-complete.json";
+
+/** The broker's endpoint. One deployment serves every rollout environment. */
+export const DEFAULT_BROKER_URL = "https://cdn-deploy.decentraland.org";
+
+/** The audience the broker expects on the OIDC token. */
+export const DEFAULT_OIDC_AUDIENCE = "dcl-cdn-deploy";

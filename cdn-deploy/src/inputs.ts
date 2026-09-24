@@ -1,10 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as core from "@actions/core";
-import { ActionInputs, DeploymentTarget, Environment, KvTarget, NamespaceMap } from "./types";
+import { ActionInputs, DEFAULT_BROKER_URL, DEFAULT_OIDC_AUDIENCE, Environment } from "./types";
 
 export const ENVIRONMENTS: Environment[] = ["zone", "today", "org"];
-export const DEFAULT_BUCKET = "cdn-decentraland-org-contentbucket-371d0b7";
 export const DEFAULT_CDN_BASE_URL = "https://cdn.decentraland.org";
 export const DEFAULT_ROLLOUT_NAME = "_site";
 export const DEFAULT_ENVIRONMENTS: Environment[] = ["zone", "today"];
@@ -41,11 +40,6 @@ export function parseBooleanInput(raw: string, fallback: boolean, name: string):
   throw new Error(`Invalid value "${raw}" for \`${name}\`. Expected true or false.`);
 }
 
-/** `@dcl/auth-site` -> `auth`, `@dcl/sites` -> `sites`. */
-export function deriveDeploymentPath(packageName: string): string {
-  return packageName.replace(/^@[^/]+\//, "").replace(/-site$/, "");
-}
-
 /**
  * The package name doubles as the S3 key root and the KV record prefix, so it
  * decides which site's content a run can overwrite. It comes from the
@@ -68,19 +62,6 @@ export function validatePackageName(packageName: string): string {
     );
   }
   return packageName;
-}
-
-/** The KV key: explicit `domain`, explicit `deployment-path`, or derived from the package name. */
-export function resolveTarget(opts: {
-  path?: string;
-  domain?: string;
-  packageName: string;
-}): DeploymentTarget {
-  if (opts.domain && opts.path) {
-    throw new Error("Provide either `deployment-path` or `domain`, not both");
-  }
-  if (opts.domain) return { kind: "domain", domain: opts.domain };
-  return { kind: "path", path: opts.path || deriveDeploymentPath(opts.packageName) };
 }
 
 /** Parse the environments input — JSON array (`["zone","today"]`) or comma list. Empty string -> []. */
@@ -124,44 +105,6 @@ export function parseEnvironments(raw: string): Environment[] {
   return environments;
 }
 
-/** Pick the namespace id for an environment: explicit override > per-env input. */
-export function resolveNamespace(
-  environment: Environment,
-  map: NamespaceMap,
-  override?: string,
-): string {
-  const ns = override || map[environment];
-  if (!ns) {
-    throw new Error(
-      `No Cloudflare namespace id for environment "${environment}". ` +
-        `Set the org secret CF_NS_${environment.toUpperCase()} (or cloudflare-namespace-${environment}).`,
-    );
-  }
-  return ns;
-}
-
-export function resolveKvTargets(
-  environments: Environment[],
-  map: NamespaceMap,
-  override?: string,
-): KvTarget[] {
-  const targets = environments.map((environment) => ({
-    environment,
-    namespaceId: resolveNamespace(environment, map, override),
-  }));
-
-  // Several environments can legitimately share one namespace (a single-account
-  // test setup, or an explicit `cloudflare-namespace-id`). Writing the same
-  // record to the same namespace twice is idempotent but pointless, so collapse
-  // the duplicates and keep the first environment's name for reporting.
-  const seen = new Set<string>();
-  return targets.filter((target) => {
-    if (seen.has(target.namespaceId)) return false;
-    seen.add(target.namespaceId);
-    return true;
-  });
-}
-
 export function parsePercentage(raw: string): number {
   const pct = raw === "" ? 100 : Number(raw);
   // Rollout percentages are integers; a fractional value would be silently
@@ -170,18 +113,6 @@ export function parsePercentage(raw: string): number {
     throw new Error(`Invalid percentage "${raw}". Expected an integer between 0 and 100.`);
   }
   return pct;
-}
-
-/** The KV key for a target: the path or the domain (environment picks namespace). */
-export function kvKeyForTarget(target: DeploymentTarget): string {
-  return target.kind === "domain" ? target.domain : target.path;
-}
-
-/** Human-facing URL for the Slack notification, mirroring `changeRollout`. */
-export function rolloutUrlForTarget(target: DeploymentTarget, environment: Environment): string {
-  return target.kind === "domain"
-    ? `https://${target.domain}`
-    : `https://decentraland.${environment}/${target.path}`;
 }
 
 /** True when the folder has an `index.html` at its root. */
@@ -287,12 +218,6 @@ export function readInputs(): ActionInputs {
     );
   }
 
-  const target = resolveTarget({
-    path: core.getInput("deployment-path") || undefined,
-    domain: core.getInput("domain") || undefined,
-    packageName,
-  });
-
   // environments: explicit plural > singular sugar > default [zone, today].
   const envPlural = core.getInput("deployment-environments");
   const envSingular = core.getInput("deployment-environment");
@@ -306,21 +231,6 @@ export function readInputs(): ActionInputs {
     environments = parseEnvironments(envPlural); // may be [] (stage)
   else if (envSingular !== "") environments = [asEnvironment(envSingular)];
   else environments = DEFAULT_ENVIRONMENTS;
-
-  const namespaceOverride = core.getInput("cloudflare-namespace-id") || undefined;
-  const kvTargets = resolveKvTargets(
-    environments,
-    {
-      zone: core.getInput("cloudflare-namespace-zone") || undefined,
-      today: core.getInput("cloudflare-namespace-today") || undefined,
-      org: core.getInput("cloudflare-namespace-org") || undefined,
-    },
-    namespaceOverride,
-  );
-
-  // Namespace ids are org secrets. Mask them so they can't reach a log through
-  // an error message even when a caller passes them from a `vars.*`.
-  for (const { namespaceId } of kvTargets) core.setSecret(namespaceId);
 
   const version = core.getInput("version") || undefined;
   const sourceVersion = core.getInput("source-version") || undefined;
@@ -337,13 +247,6 @@ export function readInputs(): ActionInputs {
     );
   }
 
-  // Cloudflare credentials are only needed when something is actually repointed;
-  // a stage-only run (`deployment-environments: '[]'`) never calls Cloudflare.
-  const needsCloudflare = environments.length > 0;
-  const cloudflareAccountId = core.getInput("cloudflare-account-id", { required: needsCloudflare });
-  const cloudflareApiToken = core.getInput("cloudflare-api-token", { required: needsCloudflare });
-  if (cloudflareApiToken) core.setSecret(cloudflareApiToken);
-
   const slackWebhook = core.getInput("slack-webhook") || undefined;
   if (slackWebhook) core.setSecret(slackWebhook);
 
@@ -351,9 +254,7 @@ export function readInputs(): ActionInputs {
     distPath,
     packageName,
     baseVersion,
-    target,
     environments,
-    kvTargets,
     deploymentName: core.getInput("deployment-name") || DEFAULT_ROLLOUT_NAME,
     percentage: parsePercentage(core.getInput("percentage")),
     version,
@@ -362,10 +263,6 @@ export function readInputs(): ActionInputs {
     requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
     force: parseBooleanInput(core.getInput("force"), false, "force"),
     copyFromCommit: parseBooleanInput(core.getInput("copy-from-commit"), false, "copy-from-commit"),
-    awsRegion: core.getInput("aws-region") || "us-east-1",
-    s3Bucket: core.getInput("s3-bucket") || DEFAULT_BUCKET,
-    cloudflareAccountId,
-    cloudflareApiToken,
     slackWebhook,
     createGithubDeployment: parseBooleanInput(
       core.getInput("create-github-deployment"),
@@ -373,5 +270,7 @@ export function readInputs(): ActionInputs {
       "create-github-deployment",
     ),
     cdnBaseUrl: core.getInput("cdn-base-url") || DEFAULT_CDN_BASE_URL,
+    brokerUrl: core.getInput("broker-url") || DEFAULT_BROKER_URL,
+    oidcAudience: core.getInput("oidc-audience") || DEFAULT_OIDC_AUDIENCE,
   };
 }

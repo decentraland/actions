@@ -1,5 +1,5 @@
 import nodeFetch from "node-fetch";
-import { FetchLike } from "./cloudflare";
+import { FetchLike } from "./types";
 import { withRetry, Sleep } from "./retry";
 
 /** Carries the HTTP status so `withRetry` can tell a 429/5xx from a 4xx. */

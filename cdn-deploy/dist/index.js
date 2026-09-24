@@ -6141,128 +6141,6 @@ exports.request = request;
 
 /***/ }),
 
-/***/ 563:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.patchRollouts = exports.calculateRolloutsForDomain = exports.calculateRollout = exports.normalizedValue = void 0;
-const murmurHash3 = __importStar(__nccwpck_require__(20126));
-const semver_1 = __nccwpck_require__(62088);
-/**
- * This function calculates a normalized value for a RolloutRecord and a Context.
- * The function is stable and deterministic for non-empty contexts,
- * it returns a numeric hash from 1 to 100.
- * @public
- */
-function normalizedValue(context, rollout) {
-    const userId = context.userId || context.sessionId || context.remoteAddress || Math.random();
-    const rolloutId = `${rollout.version}:${rollout.prefix}`;
-    return (murmurHash3.x86.hash32(`${rolloutId}:${userId}`) % 100) + 1;
-}
-exports.normalizedValue = normalizedValue;
-/**
- * Calculates and selects a rollout for a list of RolloutRecords and a given
- * Context.
- *
- * @public
- */
-function calculateRollout(context, records) {
-    if (records.length == 0) {
-        throw new Error("Empty rollouts");
-    }
-    for (let rollout of records) {
-        const normalizedUserId = normalizedValue(context, rollout);
-        if (rollout.percentage > 0 && normalizedUserId <= rollout.percentage) {
-            return rollout;
-        }
-    }
-    // return last as fallback
-    return records[records.length - 1];
-}
-exports.calculateRollout = calculateRollout;
-/**
- * Calculates all rollouts for a specific RolloutDomain and Context
- *
- * @public
- */
-function calculateRolloutsForDomain(context, domain) {
-    const map = {};
-    if (domain.records) {
-        for (let rolloutName of Object.keys(domain.records)) {
-            if (domain.records[rolloutName] && domain.records[rolloutName].length) {
-                map[rolloutName] = calculateRollout(context, domain.records[rolloutName]);
-            }
-        }
-    }
-    return map;
-}
-exports.calculateRolloutsForDomain = calculateRolloutsForDomain;
-/**
- * @public
- */
-function patchRollouts(currentValues, rolloutName, patch, timestamp = Date.now()) {
-    const { version, percentage, prefix } = patch;
-    if (typeof rolloutName != "string" || !rolloutName.length) {
-        throw new Error("patchRollouts: invalid rolloutName");
-    }
-    if (typeof version != "string" || !version.length || !semver_1.valid(version)) {
-        throw new Error("patchRollouts: invalid version: " + version);
-    }
-    if (typeof percentage != "number" || isNaN(percentage) || percentage < 0 || percentage > 100) {
-        throw new Error(`patchRollouts: invalid percentage ${percentage}`);
-    }
-    if (typeof timestamp != "number" || isNaN(timestamp) || timestamp <= 0) {
-        throw new Error(`patchRollouts: invalid timestamp ${timestamp}`);
-    }
-    // always normalize for backwards compatibility
-    currentValues.records = currentValues.records || {};
-    currentValues.records[rolloutName] = currentValues.records[rolloutName] || [];
-    // apply changes
-    let currentVersion = currentValues.records[rolloutName].find(($) => $.version == version);
-    if (!currentVersion) {
-        currentVersion = {
-            percentage: percentage | 0,
-            prefix,
-            version,
-            createdAt: timestamp,
-        };
-        currentValues.records[rolloutName].push(currentVersion);
-    }
-    // override currentVersion percentage
-    currentVersion.percentage = percentage;
-    currentVersion.updatedAt = timestamp;
-    // sort deployments before saving
-    currentValues.records[rolloutName].sort((a, b) => {
-        return -semver_1.compare(a.version, b.version);
-    });
-    return currentValues;
-}
-exports.patchRollouts = patchRollouts;
-//# sourceMappingURL=index.js.map
-
-/***/ }),
-
 /***/ 77784:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -42349,562 +42227,6 @@ module.exports = __nccwpck_require__(81813)
 
 /***/ }),
 
-/***/ 20126:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-module.exports = __nccwpck_require__(67248);
-
-
-/***/ }),
-
-/***/ 67248:
-/***/ (function(module, exports) {
-
-/* jshint -W086: true */
-// +----------------------------------------------------------------------+
-// | murmurHash3js.js v3.0.1 // https://github.com/pid/murmurHash3js
-// | A javascript implementation of MurmurHash3's x86 hashing algorithms. |
-// |----------------------------------------------------------------------|
-// | Copyright (c) 2012-2015 Karan Lyons                                       |
-// | https://github.com/karanlyons/murmurHash3.js/blob/c1778f75792abef7bdd74bc85d2d4e1a3d25cfe9/murmurHash3.js |
-// | Freely distributable under the MIT license.                          |
-// +----------------------------------------------------------------------+
-
-;(function (root, undefined) {
-    'use strict';
-
-    // Create a local object that'll be exported or referenced globally.
-    var library = {
-        'version': '3.0.1',
-        'x86': {},
-        'x64': {}
-    };
-
-    // PRIVATE FUNCTIONS
-    // -----------------
-
-    function _x86Multiply(m, n) {
-        //
-        // Given two 32bit ints, returns the two multiplied together as a
-        // 32bit int.
-        //
-
-        return ((m & 0xffff) * n) + ((((m >>> 16) * n) & 0xffff) << 16);
-    }
-
-    function _x86Rotl(m, n) {
-        //
-        // Given a 32bit int and an int representing a number of bit positions,
-        // returns the 32bit int rotated left by that number of positions.
-        //
-
-        return (m << n) | (m >>> (32 - n));
-    }
-
-    function _x86Fmix(h) {
-        //
-        // Given a block, returns murmurHash3's final x86 mix of that block.
-        //
-
-        h ^= h >>> 16;
-        h = _x86Multiply(h, 0x85ebca6b);
-        h ^= h >>> 13;
-        h = _x86Multiply(h, 0xc2b2ae35);
-        h ^= h >>> 16;
-
-        return h;
-    }
-
-    function _x64Add(m, n) {
-        //
-        // Given two 64bit ints (as an array of two 32bit ints) returns the two
-        // added together as a 64bit int (as an array of two 32bit ints).
-        //
-
-        m = [m[0] >>> 16, m[0] & 0xffff, m[1] >>> 16, m[1] & 0xffff];
-        n = [n[0] >>> 16, n[0] & 0xffff, n[1] >>> 16, n[1] & 0xffff];
-        var o = [0, 0, 0, 0];
-
-        o[3] += m[3] + n[3];
-        o[2] += o[3] >>> 16;
-        o[3] &= 0xffff;
-
-        o[2] += m[2] + n[2];
-        o[1] += o[2] >>> 16;
-        o[2] &= 0xffff;
-
-        o[1] += m[1] + n[1];
-        o[0] += o[1] >>> 16;
-        o[1] &= 0xffff;
-
-        o[0] += m[0] + n[0];
-        o[0] &= 0xffff;
-
-        return [(o[0] << 16) | o[1], (o[2] << 16) | o[3]];
-    }
-
-    function _x64Multiply(m, n) {
-        //
-        // Given two 64bit ints (as an array of two 32bit ints) returns the two
-        // multiplied together as a 64bit int (as an array of two 32bit ints).
-        //
-
-        m = [m[0] >>> 16, m[0] & 0xffff, m[1] >>> 16, m[1] & 0xffff];
-        n = [n[0] >>> 16, n[0] & 0xffff, n[1] >>> 16, n[1] & 0xffff];
-        var o = [0, 0, 0, 0];
-
-        o[3] += m[3] * n[3];
-        o[2] += o[3] >>> 16;
-        o[3] &= 0xffff;
-
-        o[2] += m[2] * n[3];
-        o[1] += o[2] >>> 16;
-        o[2] &= 0xffff;
-
-        o[2] += m[3] * n[2];
-        o[1] += o[2] >>> 16;
-        o[2] &= 0xffff;
-
-        o[1] += m[1] * n[3];
-        o[0] += o[1] >>> 16;
-        o[1] &= 0xffff;
-
-        o[1] += m[2] * n[2];
-        o[0] += o[1] >>> 16;
-        o[1] &= 0xffff;
-
-        o[1] += m[3] * n[1];
-        o[0] += o[1] >>> 16;
-        o[1] &= 0xffff;
-
-        o[0] += (m[0] * n[3]) + (m[1] * n[2]) + (m[2] * n[1]) + (m[3] * n[0]);
-        o[0] &= 0xffff;
-
-        return [(o[0] << 16) | o[1], (o[2] << 16) | o[3]];
-    }
-
-    function _x64Rotl(m, n) {
-        //
-        // Given a 64bit int (as an array of two 32bit ints) and an int
-        // representing a number of bit positions, returns the 64bit int (as an
-        // array of two 32bit ints) rotated left by that number of positions.
-        //
-
-        n %= 64;
-
-        if (n === 32) {
-            return [m[1], m[0]];
-        } else if (n < 32) {
-            return [(m[0] << n) | (m[1] >>> (32 - n)), (m[1] << n) | (m[0] >>> (32 - n))];
-        } else {
-            n -= 32;
-            return [(m[1] << n) | (m[0] >>> (32 - n)), (m[0] << n) | (m[1] >>> (32 - n))];
-        }
-    }
-
-    function _x64LeftShift(m, n) {
-        //
-        // Given a 64bit int (as an array of two 32bit ints) and an int
-        // representing a number of bit positions, returns the 64bit int (as an
-        // array of two 32bit ints) shifted left by that number of positions.
-        //
-
-        n %= 64;
-
-        if (n === 0) {
-            return m;
-        } else if (n < 32) {
-            return [(m[0] << n) | (m[1] >>> (32 - n)), m[1] << n];
-        } else {
-            return [m[1] << (n - 32), 0];
-        }
-    }
-
-    function _x64Xor(m, n) {
-        //
-        // Given two 64bit ints (as an array of two 32bit ints) returns the two
-        // xored together as a 64bit int (as an array of two 32bit ints).
-        //
-
-        return [m[0] ^ n[0], m[1] ^ n[1]];
-    }
-
-    function _x64Fmix(h) {
-        //
-        // Given a block, returns murmurHash3's final x64 mix of that block.
-        // (`[0, h[0] >>> 1]` is a 33 bit unsigned right shift. This is the
-        // only place where we need to right shift 64bit ints.)
-        //
-
-        h = _x64Xor(h, [0, h[0] >>> 1]);
-        h = _x64Multiply(h, [0xff51afd7, 0xed558ccd]);
-        h = _x64Xor(h, [0, h[0] >>> 1]);
-        h = _x64Multiply(h, [0xc4ceb9fe, 0x1a85ec53]);
-        h = _x64Xor(h, [0, h[0] >>> 1]);
-
-        return h;
-    }
-
-    // PUBLIC FUNCTIONS
-    // ----------------
-
-    library.x86.hash32 = function (key, seed) {
-        //
-        // Given a string and an optional seed as an int, returns a 32 bit hash
-        // using the x86 flavor of MurmurHash3, as an unsigned int.
-        //
-
-        key = key || '';
-        seed = seed || 0;
-
-        var remainder = key.length % 4;
-        var bytes = key.length - remainder;
-
-        var h1 = seed;
-
-        var k1 = 0;
-
-        var c1 = 0xcc9e2d51;
-        var c2 = 0x1b873593;
-
-        for (var i = 0; i < bytes; i = i + 4) {
-            k1 = ((key.charCodeAt(i) & 0xff)) | ((key.charCodeAt(i + 1) & 0xff) << 8) | ((key.charCodeAt(i + 2) & 0xff) << 16) | ((key.charCodeAt(i + 3) & 0xff) << 24);
-
-            k1 = _x86Multiply(k1, c1);
-            k1 = _x86Rotl(k1, 15);
-            k1 = _x86Multiply(k1, c2);
-
-            h1 ^= k1;
-            h1 = _x86Rotl(h1, 13);
-            h1 = _x86Multiply(h1, 5) + 0xe6546b64;
-        }
-
-        k1 = 0;
-
-        switch (remainder) {
-            case 3:
-                k1 ^= (key.charCodeAt(i + 2) & 0xff) << 16;
-
-            case 2:
-                k1 ^= (key.charCodeAt(i + 1) & 0xff) << 8;
-
-            case 1:
-                k1 ^= (key.charCodeAt(i) & 0xff);
-                k1 = _x86Multiply(k1, c1);
-                k1 = _x86Rotl(k1, 15);
-                k1 = _x86Multiply(k1, c2);
-                h1 ^= k1;
-        }
-
-        h1 ^= key.length;
-        h1 = _x86Fmix(h1);
-
-        return h1 >>> 0;
-    };
-
-    library.x86.hash128 = function (key, seed) {
-        //
-        // Given a string and an optional seed as an int, returns a 128 bit
-        // hash using the x86 flavor of MurmurHash3, as an unsigned hex.
-        //
-
-        key = key || '';
-        seed = seed || 0;
-
-        var remainder = key.length % 16;
-        var bytes = key.length - remainder;
-
-        var h1 = seed;
-        var h2 = seed;
-        var h3 = seed;
-        var h4 = seed;
-
-        var k1 = 0;
-        var k2 = 0;
-        var k3 = 0;
-        var k4 = 0;
-
-        var c1 = 0x239b961b;
-        var c2 = 0xab0e9789;
-        var c3 = 0x38b34ae5;
-        var c4 = 0xa1e38b93;
-
-        for (var i = 0; i < bytes; i = i + 16) {
-            k1 = ((key.charCodeAt(i) & 0xff)) | ((key.charCodeAt(i + 1) & 0xff) << 8) | ((key.charCodeAt(i + 2) & 0xff) << 16) | ((key.charCodeAt(i + 3) & 0xff) << 24);
-            k2 = ((key.charCodeAt(i + 4) & 0xff)) | ((key.charCodeAt(i + 5) & 0xff) << 8) | ((key.charCodeAt(i + 6) & 0xff) << 16) | ((key.charCodeAt(i + 7) & 0xff) << 24);
-            k3 = ((key.charCodeAt(i + 8) & 0xff)) | ((key.charCodeAt(i + 9) & 0xff) << 8) | ((key.charCodeAt(i + 10) & 0xff) << 16) | ((key.charCodeAt(i + 11) & 0xff) << 24);
-            k4 = ((key.charCodeAt(i + 12) & 0xff)) | ((key.charCodeAt(i + 13) & 0xff) << 8) | ((key.charCodeAt(i + 14) & 0xff) << 16) | ((key.charCodeAt(i + 15) & 0xff) << 24);
-
-            k1 = _x86Multiply(k1, c1);
-            k1 = _x86Rotl(k1, 15);
-            k1 = _x86Multiply(k1, c2);
-            h1 ^= k1;
-
-            h1 = _x86Rotl(h1, 19);
-            h1 += h2;
-            h1 = _x86Multiply(h1, 5) + 0x561ccd1b;
-
-            k2 = _x86Multiply(k2, c2);
-            k2 = _x86Rotl(k2, 16);
-            k2 = _x86Multiply(k2, c3);
-            h2 ^= k2;
-
-            h2 = _x86Rotl(h2, 17);
-            h2 += h3;
-            h2 = _x86Multiply(h2, 5) + 0x0bcaa747;
-
-            k3 = _x86Multiply(k3, c3);
-            k3 = _x86Rotl(k3, 17);
-            k3 = _x86Multiply(k3, c4);
-            h3 ^= k3;
-
-            h3 = _x86Rotl(h3, 15);
-            h3 += h4;
-            h3 = _x86Multiply(h3, 5) + 0x96cd1c35;
-
-            k4 = _x86Multiply(k4, c4);
-            k4 = _x86Rotl(k4, 18);
-            k4 = _x86Multiply(k4, c1);
-            h4 ^= k4;
-
-            h4 = _x86Rotl(h4, 13);
-            h4 += h1;
-            h4 = _x86Multiply(h4, 5) + 0x32ac3b17;
-        }
-
-        k1 = 0;
-        k2 = 0;
-        k3 = 0;
-        k4 = 0;
-
-        switch (remainder) {
-            case 15:
-                k4 ^= key.charCodeAt(i + 14) << 16;
-
-            case 14:
-                k4 ^= key.charCodeAt(i + 13) << 8;
-
-            case 13:
-                k4 ^= key.charCodeAt(i + 12);
-                k4 = _x86Multiply(k4, c4);
-                k4 = _x86Rotl(k4, 18);
-                k4 = _x86Multiply(k4, c1);
-                h4 ^= k4;
-
-            case 12:
-                k3 ^= key.charCodeAt(i + 11) << 24;
-
-            case 11:
-                k3 ^= key.charCodeAt(i + 10) << 16;
-
-            case 10:
-                k3 ^= key.charCodeAt(i + 9) << 8;
-
-            case 9:
-                k3 ^= key.charCodeAt(i + 8);
-                k3 = _x86Multiply(k3, c3);
-                k3 = _x86Rotl(k3, 17);
-                k3 = _x86Multiply(k3, c4);
-                h3 ^= k3;
-
-            case 8:
-                k2 ^= key.charCodeAt(i + 7) << 24;
-
-            case 7:
-                k2 ^= key.charCodeAt(i + 6) << 16;
-
-            case 6:
-                k2 ^= key.charCodeAt(i + 5) << 8;
-
-            case 5:
-                k2 ^= key.charCodeAt(i + 4);
-                k2 = _x86Multiply(k2, c2);
-                k2 = _x86Rotl(k2, 16);
-                k2 = _x86Multiply(k2, c3);
-                h2 ^= k2;
-
-            case 4:
-                k1 ^= key.charCodeAt(i + 3) << 24;
-
-            case 3:
-                k1 ^= key.charCodeAt(i + 2) << 16;
-
-            case 2:
-                k1 ^= key.charCodeAt(i + 1) << 8;
-
-            case 1:
-                k1 ^= key.charCodeAt(i);
-                k1 = _x86Multiply(k1, c1);
-                k1 = _x86Rotl(k1, 15);
-                k1 = _x86Multiply(k1, c2);
-                h1 ^= k1;
-        }
-
-        h1 ^= key.length;
-        h2 ^= key.length;
-        h3 ^= key.length;
-        h4 ^= key.length;
-
-        h1 += h2;
-        h1 += h3;
-        h1 += h4;
-        h2 += h1;
-        h3 += h1;
-        h4 += h1;
-
-        h1 = _x86Fmix(h1);
-        h2 = _x86Fmix(h2);
-        h3 = _x86Fmix(h3);
-        h4 = _x86Fmix(h4);
-
-        h1 += h2;
-        h1 += h3;
-        h1 += h4;
-        h2 += h1;
-        h3 += h1;
-        h4 += h1;
-
-        return ("00000000" + (h1 >>> 0).toString(16)).slice(-8) + ("00000000" + (h2 >>> 0).toString(16)).slice(-8) + ("00000000" + (h3 >>> 0).toString(16)).slice(-8) + ("00000000" + (h4 >>> 0).toString(16)).slice(-8);
-    };
-
-    library.x64.hash128 = function (key, seed) {
-        //
-        // Given a string and an optional seed as an int, returns a 128 bit
-        // hash using the x64 flavor of MurmurHash3, as an unsigned hex.
-        //
-
-        key = key || '';
-        seed = seed || 0;
-
-        var remainder = key.length % 16;
-        var bytes = key.length - remainder;
-
-        var h1 = [0, seed];
-        var h2 = [0, seed];
-
-        var k1 = [0, 0];
-        var k2 = [0, 0];
-
-        var c1 = [0x87c37b91, 0x114253d5];
-        var c2 = [0x4cf5ad43, 0x2745937f];
-
-        for (var i = 0; i < bytes; i = i + 16) {
-            k1 = [((key.charCodeAt(i + 4) & 0xff)) | ((key.charCodeAt(i + 5) & 0xff) << 8) | ((key.charCodeAt(i + 6) & 0xff) << 16) | ((key.charCodeAt(i + 7) & 0xff) << 24), ((key.charCodeAt(i) & 0xff)) | ((key.charCodeAt(i + 1) &
-                0xff) << 8) | ((key.charCodeAt(i + 2) & 0xff) << 16) | ((key.charCodeAt(i + 3) & 0xff) << 24)];
-            k2 = [((key.charCodeAt(i + 12) & 0xff)) | ((key.charCodeAt(i + 13) & 0xff) << 8) | ((key.charCodeAt(i + 14) & 0xff) << 16) | ((key.charCodeAt(i + 15) & 0xff) << 24), ((key.charCodeAt(i + 8) & 0xff)) | ((key.charCodeAt(i +
-                9) & 0xff) << 8) | ((key.charCodeAt(i + 10) & 0xff) << 16) | ((key.charCodeAt(i + 11) & 0xff) << 24)];
-
-            k1 = _x64Multiply(k1, c1);
-            k1 = _x64Rotl(k1, 31);
-            k1 = _x64Multiply(k1, c2);
-            h1 = _x64Xor(h1, k1);
-
-            h1 = _x64Rotl(h1, 27);
-            h1 = _x64Add(h1, h2);
-            h1 = _x64Add(_x64Multiply(h1, [0, 5]), [0, 0x52dce729]);
-
-            k2 = _x64Multiply(k2, c2);
-            k2 = _x64Rotl(k2, 33);
-            k2 = _x64Multiply(k2, c1);
-            h2 = _x64Xor(h2, k2);
-
-            h2 = _x64Rotl(h2, 31);
-            h2 = _x64Add(h2, h1);
-            h2 = _x64Add(_x64Multiply(h2, [0, 5]), [0, 0x38495ab5]);
-        }
-
-        k1 = [0, 0];
-        k2 = [0, 0];
-
-        switch (remainder) {
-            case 15:
-                k2 = _x64Xor(k2, _x64LeftShift([0, key.charCodeAt(i + 14)], 48));
-
-            case 14:
-                k2 = _x64Xor(k2, _x64LeftShift([0, key.charCodeAt(i + 13)], 40));
-
-            case 13:
-                k2 = _x64Xor(k2, _x64LeftShift([0, key.charCodeAt(i + 12)], 32));
-
-            case 12:
-                k2 = _x64Xor(k2, _x64LeftShift([0, key.charCodeAt(i + 11)], 24));
-
-            case 11:
-                k2 = _x64Xor(k2, _x64LeftShift([0, key.charCodeAt(i + 10)], 16));
-
-            case 10:
-                k2 = _x64Xor(k2, _x64LeftShift([0, key.charCodeAt(i + 9)], 8));
-
-            case 9:
-                k2 = _x64Xor(k2, [0, key.charCodeAt(i + 8)]);
-                k2 = _x64Multiply(k2, c2);
-                k2 = _x64Rotl(k2, 33);
-                k2 = _x64Multiply(k2, c1);
-                h2 = _x64Xor(h2, k2);
-
-            case 8:
-                k1 = _x64Xor(k1, _x64LeftShift([0, key.charCodeAt(i + 7)], 56));
-
-            case 7:
-                k1 = _x64Xor(k1, _x64LeftShift([0, key.charCodeAt(i + 6)], 48));
-
-            case 6:
-                k1 = _x64Xor(k1, _x64LeftShift([0, key.charCodeAt(i + 5)], 40));
-
-            case 5:
-                k1 = _x64Xor(k1, _x64LeftShift([0, key.charCodeAt(i + 4)], 32));
-
-            case 4:
-                k1 = _x64Xor(k1, _x64LeftShift([0, key.charCodeAt(i + 3)], 24));
-
-            case 3:
-                k1 = _x64Xor(k1, _x64LeftShift([0, key.charCodeAt(i + 2)], 16));
-
-            case 2:
-                k1 = _x64Xor(k1, _x64LeftShift([0, key.charCodeAt(i + 1)], 8));
-
-            case 1:
-                k1 = _x64Xor(k1, [0, key.charCodeAt(i)]);
-                k1 = _x64Multiply(k1, c1);
-                k1 = _x64Rotl(k1, 31);
-                k1 = _x64Multiply(k1, c2);
-                h1 = _x64Xor(h1, k1);
-        }
-
-        h1 = _x64Xor(h1, [0, key.length]);
-        h2 = _x64Xor(h2, [0, key.length]);
-
-        h1 = _x64Add(h1, h2);
-        h2 = _x64Add(h2, h1);
-
-        h1 = _x64Fmix(h1);
-        h2 = _x64Fmix(h2);
-
-        h1 = _x64Add(h1, h2);
-        h2 = _x64Add(h2, h1);
-
-        return ("00000000" + (h1[0] >>> 0).toString(16)).slice(-8) + ("00000000" + (h1[1] >>> 0).toString(16)).slice(-8) + ("00000000" + (h2[0] >>> 0).toString(16)).slice(-8) + ("00000000" + (h2[1] >>> 0).toString(16)).slice(-8);
-    };
-
-    // INITIALIZATION
-    // --------------
-
-    // Export murmurHash3 for CommonJS, either as an AMD module or just as part
-    // of the global object.
-    if (true) {
-
-        if ( true && module.exports) {
-            exports = module.exports = library;
-        }
-
-        exports.murmurHash3 = library;
-
-    } else {}
-})(this);
-
-
-/***/ }),
-
 /***/ 26705:
 /***/ ((module, exports, __nccwpck_require__) => {
 
@@ -46417,2803 +45739,6 @@ module.exports = async (
     }())
   }
 })( false ? 0 : exports)
-
-
-/***/ }),
-
-/***/ 89379:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const ANY = Symbol('SemVer ANY')
-// hoisted class for cyclic dependency
-class Comparator {
-  static get ANY () {
-    return ANY
-  }
-
-  constructor (comp, options) {
-    options = parseOptions(options)
-
-    if (comp instanceof Comparator) {
-      if (comp.loose === !!options.loose) {
-        return comp
-      } else {
-        comp = comp.value
-      }
-    }
-
-    comp = comp.trim().split(/\s+/).join(' ')
-    debug('comparator', comp, options)
-    this.options = options
-    this.loose = !!options.loose
-    this.parse(comp)
-
-    if (this.semver === ANY) {
-      this.value = ''
-    } else {
-      this.value = this.operator + this.semver.version
-    }
-
-    debug('comp', this)
-  }
-
-  parse (comp) {
-    const r = this.options.loose ? re[t.COMPARATORLOOSE] : re[t.COMPARATOR]
-    const m = comp.match(r)
-
-    if (!m) {
-      throw new TypeError(`Invalid comparator: ${comp}`)
-    }
-
-    this.operator = m[1] !== undefined ? m[1] : ''
-    if (this.operator === '=') {
-      this.operator = ''
-    }
-
-    // if it literally is just '>' or '' then allow anything.
-    if (!m[2]) {
-      this.semver = ANY
-    } else {
-      this.semver = new SemVer(m[2], this.options.loose)
-    }
-  }
-
-  toString () {
-    return this.value
-  }
-
-  test (version) {
-    debug('Comparator.test', version, this.options.loose)
-
-    if (this.semver === ANY || version === ANY) {
-      return true
-    }
-
-    if (typeof version === 'string') {
-      try {
-        version = new SemVer(version, this.options)
-      } catch (er) {
-        return false
-      }
-    }
-
-    return cmp(version, this.operator, this.semver, this.options)
-  }
-
-  intersects (comp, options) {
-    if (!(comp instanceof Comparator)) {
-      throw new TypeError('a Comparator is required')
-    }
-
-    if (this.operator === '') {
-      if (this.value === '') {
-        return true
-      }
-      return new Range(comp.value, options).test(this.value)
-    } else if (comp.operator === '') {
-      if (comp.value === '') {
-        return true
-      }
-      return new Range(this.value, options).test(comp.semver)
-    }
-
-    options = parseOptions(options)
-
-    // Special cases where nothing can possibly be lower
-    if (options.includePrerelease &&
-      (this.value === '<0.0.0-0' || comp.value === '<0.0.0-0')) {
-      return false
-    }
-    if (!options.includePrerelease &&
-      (this.value.startsWith('<0.0.0') || comp.value.startsWith('<0.0.0'))) {
-      return false
-    }
-
-    // Same direction increasing (> or >=)
-    if (this.operator.startsWith('>') && comp.operator.startsWith('>')) {
-      return true
-    }
-    // Same direction decreasing (< or <=)
-    if (this.operator.startsWith('<') && comp.operator.startsWith('<')) {
-      return true
-    }
-    // same SemVer and both sides are inclusive (<= or >=)
-    if (
-      (this.semver.version === comp.semver.version) &&
-      this.operator.includes('=') && comp.operator.includes('=')) {
-      return true
-    }
-    // opposite directions less than
-    if (cmp(this.semver, '<', comp.semver, options) &&
-      this.operator.startsWith('>') && comp.operator.startsWith('<')) {
-      return true
-    }
-    // opposite directions greater than
-    if (cmp(this.semver, '>', comp.semver, options) &&
-      this.operator.startsWith('<') && comp.operator.startsWith('>')) {
-      return true
-    }
-    return false
-  }
-}
-
-module.exports = Comparator
-
-const parseOptions = __nccwpck_require__(70356)
-const { safeRe: re, t } = __nccwpck_require__(95471)
-const cmp = __nccwpck_require__(28646)
-const debug = __nccwpck_require__(1159)
-const SemVer = __nccwpck_require__(7163)
-const Range = __nccwpck_require__(96782)
-
-
-/***/ }),
-
-/***/ 96782:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SPACE_CHARACTERS = /\s+/g
-
-// hoisted class for cyclic dependency
-class Range {
-  constructor (range, options) {
-    options = parseOptions(options)
-
-    if (range instanceof Range) {
-      if (
-        range.loose === !!options.loose &&
-        range.includePrerelease === !!options.includePrerelease
-      ) {
-        return range
-      } else {
-        return new Range(range.raw, options)
-      }
-    }
-
-    if (range instanceof Comparator) {
-      // just put it in the set and return
-      this.raw = range.value
-      this.set = [[range]]
-      this.formatted = undefined
-      return this
-    }
-
-    this.options = options
-    this.loose = !!options.loose
-    this.includePrerelease = !!options.includePrerelease
-
-    // First reduce all whitespace as much as possible so we do not have to rely
-    // on potentially slow regexes like \s*. This is then stored and used for
-    // future error messages as well.
-    this.raw = range.trim().replace(SPACE_CHARACTERS, ' ')
-
-    // First, split on ||
-    this.set = this.raw
-      .split('||')
-      // map the range to a 2d array of comparators
-      .map(r => this.parseRange(r.trim()))
-      // throw out any comparator lists that are empty
-      // this generally means that it was not a valid range, which is allowed
-      // in loose mode, but will still throw if the WHOLE range is invalid.
-      .filter(c => c.length)
-
-    if (!this.set.length) {
-      throw new TypeError(`Invalid SemVer Range: ${this.raw}`)
-    }
-
-    // if we have any that are not the null set, throw out null sets.
-    if (this.set.length > 1) {
-      // keep the first one, in case they're all null sets
-      const first = this.set[0]
-      this.set = this.set.filter(c => !isNullSet(c[0]))
-      if (this.set.length === 0) {
-        this.set = [first]
-      } else if (this.set.length > 1) {
-        // if we have any that are *, then the range is just *
-        for (const c of this.set) {
-          if (c.length === 1 && isAny(c[0])) {
-            this.set = [c]
-            break
-          }
-        }
-      }
-    }
-
-    this.formatted = undefined
-  }
-
-  get range () {
-    if (this.formatted === undefined) {
-      this.formatted = ''
-      for (let i = 0; i < this.set.length; i++) {
-        if (i > 0) {
-          this.formatted += '||'
-        }
-        const comps = this.set[i]
-        for (let k = 0; k < comps.length; k++) {
-          if (k > 0) {
-            this.formatted += ' '
-          }
-          this.formatted += comps[k].toString().trim()
-        }
-      }
-    }
-    return this.formatted
-  }
-
-  format () {
-    return this.range
-  }
-
-  toString () {
-    return this.range
-  }
-
-  parseRange (range) {
-    // strip build metadata so it can't bleed into the version
-    range = range.replace(BUILDSTRIPRE, '')
-
-    // memoize range parsing for performance.
-    // this is a very hot path, and fully deterministic.
-    const memoOpts =
-      (this.options.includePrerelease && FLAG_INCLUDE_PRERELEASE) |
-      (this.options.loose && FLAG_LOOSE)
-    const memoKey = memoOpts + ':' + range
-    const cached = cache.get(memoKey)
-    if (cached) {
-      return cached
-    }
-
-    const loose = this.options.loose
-    // `1.2.3 - 1.2.4` => `>=1.2.3 <=1.2.4`
-    const hr = loose ? re[t.HYPHENRANGELOOSE] : re[t.HYPHENRANGE]
-    range = range.replace(hr, hyphenReplace(this.options.includePrerelease))
-    debug('hyphen replace', range)
-
-    // `> 1.2.3 < 1.2.5` => `>1.2.3 <1.2.5`
-    range = range.replace(re[t.COMPARATORTRIM], comparatorTrimReplace)
-    debug('comparator trim', range)
-
-    // `~ 1.2.3` => `~1.2.3`
-    range = range.replace(re[t.TILDETRIM], tildeTrimReplace)
-    debug('tilde trim', range)
-
-    // `^ 1.2.3` => `^1.2.3`
-    range = range.replace(re[t.CARETTRIM], caretTrimReplace)
-    debug('caret trim', range)
-
-    // At this point, the range is completely trimmed and
-    // ready to be split into comparators.
-
-    let rangeList = range
-      .split(' ')
-      .map(comp => parseComparator(comp, this.options))
-      .join(' ')
-      .split(/\s+/)
-      // >=0.0.0 is equivalent to *
-      .map(comp => replaceGTE0(comp, this.options))
-
-    if (loose) {
-      // in loose mode, throw out any that are not valid comparators
-      rangeList = rangeList.filter(comp => {
-        debug('loose invalid filter', comp, this.options)
-        return !!comp.match(re[t.COMPARATORLOOSE])
-      })
-    }
-    debug('range list', rangeList)
-
-    // if any comparators are the null set, then replace with JUST null set
-    // if more than one comparator, remove any * comparators
-    // also, don't include the same comparator more than once
-    const rangeMap = new Map()
-    const comparators = rangeList.map(comp => new Comparator(comp, this.options))
-    for (const comp of comparators) {
-      if (isNullSet(comp)) {
-        return [comp]
-      }
-      rangeMap.set(comp.value, comp)
-    }
-    if (rangeMap.size > 1 && rangeMap.has('')) {
-      rangeMap.delete('')
-    }
-
-    const result = [...rangeMap.values()]
-    cache.set(memoKey, result)
-    return result
-  }
-
-  intersects (range, options) {
-    if (!(range instanceof Range)) {
-      throw new TypeError('a Range is required')
-    }
-
-    return this.set.some((thisComparators) => {
-      return (
-        isSatisfiable(thisComparators, options) &&
-        range.set.some((rangeComparators) => {
-          return (
-            isSatisfiable(rangeComparators, options) &&
-            thisComparators.every((thisComparator) => {
-              return rangeComparators.every((rangeComparator) => {
-                return thisComparator.intersects(rangeComparator, options)
-              })
-            })
-          )
-        })
-      )
-    })
-  }
-
-  // if ANY of the sets match ALL of its comparators, then pass
-  test (version) {
-    if (!version) {
-      return false
-    }
-
-    if (typeof version === 'string') {
-      try {
-        version = new SemVer(version, this.options)
-      } catch (er) {
-        return false
-      }
-    }
-
-    for (let i = 0; i < this.set.length; i++) {
-      if (testSet(this.set[i], version, this.options)) {
-        return true
-      }
-    }
-    return false
-  }
-}
-
-module.exports = Range
-
-const LRU = __nccwpck_require__(61383)
-const cache = new LRU()
-
-const parseOptions = __nccwpck_require__(70356)
-const Comparator = __nccwpck_require__(89379)
-const debug = __nccwpck_require__(1159)
-const SemVer = __nccwpck_require__(7163)
-const {
-  safeRe: re,
-  src,
-  t,
-  comparatorTrimReplace,
-  tildeTrimReplace,
-  caretTrimReplace,
-} = __nccwpck_require__(95471)
-const { FLAG_INCLUDE_PRERELEASE, FLAG_LOOSE } = __nccwpck_require__(45101)
-
-// unbounded global build-metadata stripper used by parseRange
-const BUILDSTRIPRE = new RegExp(src[t.BUILD], 'g')
-
-const isNullSet = c => c.value === '<0.0.0-0'
-const isAny = c => c.value === ''
-
-// take a set of comparators and determine whether there
-// exists a version which can satisfy it
-const isSatisfiable = (comparators, options) => {
-  let result = true
-  const remainingComparators = comparators.slice()
-  let testComparator = remainingComparators.pop()
-
-  while (result && remainingComparators.length) {
-    result = remainingComparators.every((otherComparator) => {
-      return testComparator.intersects(otherComparator, options)
-    })
-
-    testComparator = remainingComparators.pop()
-  }
-
-  return result
-}
-
-// comprised of xranges, tildes, stars, and gtlt's at this point.
-// already replaced the hyphen ranges
-// turn into a set of JUST comparators.
-const parseComparator = (comp, options) => {
-  comp = comp.replace(re[t.BUILD], '')
-  debug('comp', comp, options)
-  comp = replaceCarets(comp, options)
-  debug('caret', comp)
-  comp = replaceTildes(comp, options)
-  debug('tildes', comp)
-  comp = replaceXRanges(comp, options)
-  debug('xrange', comp)
-  comp = replaceStars(comp, options)
-  debug('stars', comp)
-  return comp
-}
-
-const isX = id => !id || id.toLowerCase() === 'x' || id === '*'
-
-// ~, ~> --> * (any, kinda silly)
-// ~2, ~2.x, ~2.x.x, ~>2, ~>2.x ~>2.x.x --> >=2.0.0 <3.0.0-0
-// ~2.0, ~2.0.x, ~>2.0, ~>2.0.x --> >=2.0.0 <2.1.0-0
-// ~1.2, ~1.2.x, ~>1.2, ~>1.2.x --> >=1.2.0 <1.3.0-0
-// ~1.2.3, ~>1.2.3 --> >=1.2.3 <1.3.0-0
-// ~1.2.0, ~>1.2.0 --> >=1.2.0 <1.3.0-0
-// ~0.0.1 --> >=0.0.1 <0.1.0-0
-const replaceTildes = (comp, options) => {
-  return comp
-    .trim()
-    .split(/\s+/)
-    .map((c) => replaceTilde(c, options))
-    .join(' ')
-}
-
-const replaceTilde = (comp, options) => {
-  const r = options.loose ? re[t.TILDELOOSE] : re[t.TILDE]
-  return comp.replace(r, (_, M, m, p, pr) => {
-    debug('tilde', comp, _, M, m, p, pr)
-    let ret
-
-    if (isX(M)) {
-      ret = ''
-    } else if (isX(m)) {
-      ret = `>=${M}.0.0 <${+M + 1}.0.0-0`
-    } else if (isX(p)) {
-      // ~1.2 == >=1.2.0 <1.3.0-0
-      ret = `>=${M}.${m}.0 <${M}.${+m + 1}.0-0`
-    } else if (pr) {
-      debug('replaceTilde pr', pr)
-      ret = `>=${M}.${m}.${p}-${pr
-      } <${M}.${+m + 1}.0-0`
-    } else {
-      // ~1.2.3 == >=1.2.3 <1.3.0-0
-      ret = `>=${M}.${m}.${p
-      } <${M}.${+m + 1}.0-0`
-    }
-
-    debug('tilde return', ret)
-    return ret
-  })
-}
-
-// ^ --> * (any, kinda silly)
-// ^2, ^2.x, ^2.x.x --> >=2.0.0 <3.0.0-0
-// ^2.0, ^2.0.x --> >=2.0.0 <3.0.0-0
-// ^1.2, ^1.2.x --> >=1.2.0 <2.0.0-0
-// ^1.2.3 --> >=1.2.3 <2.0.0-0
-// ^1.2.0 --> >=1.2.0 <2.0.0-0
-// ^0.0.1 --> >=0.0.1 <0.0.2-0
-// ^0.1.0 --> >=0.1.0 <0.2.0-0
-const replaceCarets = (comp, options) => {
-  return comp
-    .trim()
-    .split(/\s+/)
-    .map((c) => replaceCaret(c, options))
-    .join(' ')
-}
-
-const replaceCaret = (comp, options) => {
-  debug('caret', comp, options)
-  const r = options.loose ? re[t.CARETLOOSE] : re[t.CARET]
-  const z = options.includePrerelease ? '-0' : ''
-  return comp.replace(r, (_, M, m, p, pr) => {
-    debug('caret', comp, _, M, m, p, pr)
-    let ret
-
-    if (isX(M)) {
-      ret = ''
-    } else if (isX(m)) {
-      ret = `>=${M}.0.0${z} <${+M + 1}.0.0-0`
-    } else if (isX(p)) {
-      if (M === '0') {
-        ret = `>=${M}.${m}.0${z} <${M}.${+m + 1}.0-0`
-      } else {
-        ret = `>=${M}.${m}.0${z} <${+M + 1}.0.0-0`
-      }
-    } else if (pr) {
-      debug('replaceCaret pr', pr)
-      if (M === '0') {
-        if (m === '0') {
-          ret = `>=${M}.${m}.${p}-${pr
-          } <${M}.${m}.${+p + 1}-0`
-        } else {
-          ret = `>=${M}.${m}.${p}-${pr
-          } <${M}.${+m + 1}.0-0`
-        }
-      } else {
-        ret = `>=${M}.${m}.${p}-${pr
-        } <${+M + 1}.0.0-0`
-      }
-    } else {
-      debug('no pr')
-      if (M === '0') {
-        if (m === '0') {
-          ret = `>=${M}.${m}.${p
-          }${z} <${M}.${m}.${+p + 1}-0`
-        } else {
-          ret = `>=${M}.${m}.${p
-          }${z} <${M}.${+m + 1}.0-0`
-        }
-      } else {
-        ret = `>=${M}.${m}.${p
-        } <${+M + 1}.0.0-0`
-      }
-    }
-
-    debug('caret return', ret)
-    return ret
-  })
-}
-
-const replaceXRanges = (comp, options) => {
-  debug('replaceXRanges', comp, options)
-  return comp
-    .split(/\s+/)
-    .map((c) => replaceXRange(c, options))
-    .join(' ')
-}
-
-const replaceXRange = (comp, options) => {
-  comp = comp.trim()
-  const r = options.loose ? re[t.XRANGELOOSE] : re[t.XRANGE]
-  return comp.replace(r, (ret, gtlt, M, m, p, pr) => {
-    debug('xRange', comp, ret, gtlt, M, m, p, pr)
-    const xM = isX(M)
-    const xm = xM || isX(m)
-    const xp = xm || isX(p)
-    const anyX = xp
-
-    if (gtlt === '=' && anyX) {
-      gtlt = ''
-    }
-
-    // if we're including prereleases in the match, then we need
-    // to fix this to -0, the lowest possible prerelease value
-    pr = options.includePrerelease ? '-0' : ''
-
-    if (xM) {
-      if (gtlt === '>' || gtlt === '<') {
-        // nothing is allowed
-        ret = '<0.0.0-0'
-      } else {
-        // nothing is forbidden
-        ret = '*'
-      }
-    } else if (gtlt && anyX) {
-      // we know patch is an x, because we have any x at all.
-      // replace X with 0
-      if (xm) {
-        m = 0
-      }
-      p = 0
-
-      if (gtlt === '>') {
-        // >1 => >=2.0.0
-        // >1.2 => >=1.3.0
-        gtlt = '>='
-        if (xm) {
-          M = +M + 1
-          m = 0
-          p = 0
-        } else {
-          m = +m + 1
-          p = 0
-        }
-      } else if (gtlt === '<=') {
-        // <=0.7.x is actually <0.8.0, since any 0.7.x should
-        // pass.  Similarly, <=7.x is actually <8.0.0, etc.
-        gtlt = '<'
-        if (xm) {
-          M = +M + 1
-        } else {
-          m = +m + 1
-        }
-      }
-
-      if (gtlt === '<') {
-        pr = '-0'
-      }
-
-      ret = `${gtlt + M}.${m}.${p}${pr}`
-    } else if (xm) {
-      ret = `>=${M}.0.0${pr} <${+M + 1}.0.0-0`
-    } else if (xp) {
-      ret = `>=${M}.${m}.0${pr
-      } <${M}.${+m + 1}.0-0`
-    }
-
-    debug('xRange return', ret)
-
-    return ret
-  })
-}
-
-// Because * is AND-ed with everything else in the comparator,
-// and '' means "any version", just remove the *s entirely.
-const replaceStars = (comp, options) => {
-  debug('replaceStars', comp, options)
-  // Looseness is ignored here.  star is always as loose as it gets!
-  return comp
-    .trim()
-    .replace(re[t.STAR], '')
-}
-
-const replaceGTE0 = (comp, options) => {
-  debug('replaceGTE0', comp, options)
-  return comp
-    .trim()
-    .replace(re[options.includePrerelease ? t.GTE0PRE : t.GTE0], '')
-}
-
-// This function is passed to string.replace(re[t.HYPHENRANGE])
-// M, m, patch, prerelease, build
-// 1.2 - 3.4.5 => >=1.2.0 <=3.4.5
-// 1.2.3 - 3.4 => >=1.2.0 <3.5.0-0 Any 3.4.x will do
-// 1.2 - 3.4 => >=1.2.0 <3.5.0-0
-// TODO build?
-const hyphenReplace = incPr => ($0,
-  from, fM, fm, fp, fpr, fb,
-  to, tM, tm, tp, tpr) => {
-  if (isX(fM)) {
-    from = ''
-  } else if (isX(fm)) {
-    from = `>=${fM}.0.0${incPr ? '-0' : ''}`
-  } else if (isX(fp)) {
-    from = `>=${fM}.${fm}.0${incPr ? '-0' : ''}`
-  } else if (fpr) {
-    from = `>=${from}`
-  } else {
-    from = `>=${from}${incPr ? '-0' : ''}`
-  }
-
-  if (isX(tM)) {
-    to = ''
-  } else if (isX(tm)) {
-    to = `<${+tM + 1}.0.0-0`
-  } else if (isX(tp)) {
-    to = `<${tM}.${+tm + 1}.0-0`
-  } else if (tpr) {
-    to = `<=${tM}.${tm}.${tp}-${tpr}`
-  } else if (incPr) {
-    to = `<${tM}.${tm}.${+tp + 1}-0`
-  } else {
-    to = `<=${to}`
-  }
-
-  return `${from} ${to}`.trim()
-}
-
-const testSet = (set, version, options) => {
-  for (let i = 0; i < set.length; i++) {
-    if (!set[i].test(version)) {
-      return false
-    }
-  }
-
-  if (version.prerelease.length && !options.includePrerelease) {
-    // Find the set of versions that are allowed to have prereleases
-    // For example, ^1.2.3-pr.1 desugars to >=1.2.3-pr.1 <2.0.0
-    // That should allow `1.2.3-pr.2` to pass.
-    // However, `1.2.4-alpha.notready` should NOT be allowed,
-    // even though it's within the range set by the comparators.
-    for (let i = 0; i < set.length; i++) {
-      debug(set[i].semver)
-      if (set[i].semver === Comparator.ANY) {
-        continue
-      }
-
-      if (set[i].semver.prerelease.length > 0) {
-        const allowed = set[i].semver
-        if (allowed.major === version.major &&
-            allowed.minor === version.minor &&
-            allowed.patch === version.patch) {
-          return true
-        }
-      }
-    }
-
-    // Version has a -pre, but it's not one of the ones we like.
-    return false
-  }
-
-  return true
-}
-
-
-/***/ }),
-
-/***/ 7163:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const debug = __nccwpck_require__(1159)
-const { MAX_LENGTH, MAX_SAFE_INTEGER } = __nccwpck_require__(45101)
-const { safeRe: re, t } = __nccwpck_require__(95471)
-
-const parseOptions = __nccwpck_require__(70356)
-const { compareIdentifiers } = __nccwpck_require__(73348)
-
-const isPrereleaseIdentifier = (prerelease, identifier) => {
-  const identifiers = identifier.split('.')
-  if (identifiers.length > prerelease.length) {
-    return false
-  }
-
-  for (let i = 0; i < identifiers.length; i++) {
-    if (compareIdentifiers(prerelease[i], identifiers[i]) !== 0) {
-      return false
-    }
-  }
-
-  return true
-}
-
-class SemVer {
-  constructor (version, options) {
-    options = parseOptions(options)
-
-    if (version instanceof SemVer) {
-      if (version.loose === !!options.loose &&
-        version.includePrerelease === !!options.includePrerelease) {
-        return version
-      } else {
-        version = version.version
-      }
-    } else if (typeof version !== 'string') {
-      throw new TypeError(`Invalid version. Must be a string. Got type "${typeof version}".`)
-    }
-
-    if (version.length > MAX_LENGTH) {
-      throw new TypeError(
-        `version is longer than ${MAX_LENGTH} characters`
-      )
-    }
-
-    debug('SemVer', version, options)
-    this.options = options
-    this.loose = !!options.loose
-    // this isn't actually relevant for versions, but keep it so that we
-    // don't run into trouble passing this.options around.
-    this.includePrerelease = !!options.includePrerelease
-
-    const m = version.trim().match(options.loose ? re[t.LOOSE] : re[t.FULL])
-
-    if (!m) {
-      throw new TypeError(`Invalid Version: ${version}`)
-    }
-
-    this.raw = version
-
-    // these are actually numbers
-    this.major = +m[1]
-    this.minor = +m[2]
-    this.patch = +m[3]
-
-    if (this.major > MAX_SAFE_INTEGER || this.major < 0) {
-      throw new TypeError('Invalid major version')
-    }
-
-    if (this.minor > MAX_SAFE_INTEGER || this.minor < 0) {
-      throw new TypeError('Invalid minor version')
-    }
-
-    if (this.patch > MAX_SAFE_INTEGER || this.patch < 0) {
-      throw new TypeError('Invalid patch version')
-    }
-
-    // numberify any prerelease numeric ids
-    if (!m[4]) {
-      this.prerelease = []
-    } else {
-      this.prerelease = m[4].split('.').map((id) => {
-        if (/^[0-9]+$/.test(id)) {
-          const num = +id
-          if (num >= 0 && num < MAX_SAFE_INTEGER) {
-            return num
-          }
-        }
-        return id
-      })
-    }
-
-    this.build = m[5] ? m[5].split('.') : []
-    this.format()
-  }
-
-  format () {
-    this.version = `${this.major}.${this.minor}.${this.patch}`
-    if (this.prerelease.length) {
-      this.version += `-${this.prerelease.join('.')}`
-    }
-    return this.version
-  }
-
-  toString () {
-    return this.version
-  }
-
-  compare (other) {
-    debug('SemVer.compare', this.version, this.options, other)
-    if (!(other instanceof SemVer)) {
-      if (typeof other === 'string' && other === this.version) {
-        return 0
-      }
-      other = new SemVer(other, this.options)
-    }
-
-    if (other.version === this.version) {
-      return 0
-    }
-
-    return this.compareMain(other) || this.comparePre(other)
-  }
-
-  compareMain (other) {
-    if (!(other instanceof SemVer)) {
-      other = new SemVer(other, this.options)
-    }
-
-    if (this.major < other.major) {
-      return -1
-    }
-    if (this.major > other.major) {
-      return 1
-    }
-    if (this.minor < other.minor) {
-      return -1
-    }
-    if (this.minor > other.minor) {
-      return 1
-    }
-    if (this.patch < other.patch) {
-      return -1
-    }
-    if (this.patch > other.patch) {
-      return 1
-    }
-    return 0
-  }
-
-  comparePre (other) {
-    if (!(other instanceof SemVer)) {
-      other = new SemVer(other, this.options)
-    }
-
-    // NOT having a prerelease is > having one
-    if (this.prerelease.length && !other.prerelease.length) {
-      return -1
-    } else if (!this.prerelease.length && other.prerelease.length) {
-      return 1
-    } else if (!this.prerelease.length && !other.prerelease.length) {
-      return 0
-    }
-
-    let i = 0
-    do {
-      const a = this.prerelease[i]
-      const b = other.prerelease[i]
-      debug('prerelease compare', i, a, b)
-      if (a === undefined && b === undefined) {
-        return 0
-      } else if (b === undefined) {
-        return 1
-      } else if (a === undefined) {
-        return -1
-      } else if (a === b) {
-        continue
-      } else {
-        return compareIdentifiers(a, b)
-      }
-    } while (++i)
-  }
-
-  compareBuild (other) {
-    if (!(other instanceof SemVer)) {
-      other = new SemVer(other, this.options)
-    }
-
-    let i = 0
-    do {
-      const a = this.build[i]
-      const b = other.build[i]
-      debug('build compare', i, a, b)
-      if (a === undefined && b === undefined) {
-        return 0
-      } else if (b === undefined) {
-        return 1
-      } else if (a === undefined) {
-        return -1
-      } else if (a === b) {
-        continue
-      } else {
-        return compareIdentifiers(a, b)
-      }
-    } while (++i)
-  }
-
-  // preminor will bump the version up to the next minor release, and immediately
-  // down to pre-release. premajor and prepatch work the same way.
-  inc (release, identifier, identifierBase) {
-    if (release.startsWith('pre')) {
-      if (!identifier && identifierBase === false) {
-        throw new Error('invalid increment argument: identifier is empty')
-      }
-      // Avoid an invalid semver results
-      if (identifier) {
-        const match = `-${identifier}`.match(this.options.loose ? re[t.PRERELEASELOOSE] : re[t.PRERELEASE])
-        if (!match || match[1] !== identifier) {
-          throw new Error(`invalid identifier: ${identifier}`)
-        }
-      }
-    }
-
-    switch (release) {
-      case 'premajor':
-        this.prerelease.length = 0
-        this.patch = 0
-        this.minor = 0
-        this.major++
-        this.inc('pre', identifier, identifierBase)
-        break
-      case 'preminor':
-        this.prerelease.length = 0
-        this.patch = 0
-        this.minor++
-        this.inc('pre', identifier, identifierBase)
-        break
-      case 'prepatch':
-        // If this is already a prerelease, it will bump to the next version
-        // drop any prereleases that might already exist, since they are not
-        // relevant at this point.
-        this.prerelease.length = 0
-        this.inc('patch', identifier, identifierBase)
-        this.inc('pre', identifier, identifierBase)
-        break
-      // If the input is a non-prerelease version, this acts the same as
-      // prepatch.
-      case 'prerelease':
-        if (this.prerelease.length === 0) {
-          this.inc('patch', identifier, identifierBase)
-        }
-        this.inc('pre', identifier, identifierBase)
-        break
-      case 'release':
-        if (this.prerelease.length === 0) {
-          throw new Error(`version ${this.raw} is not a prerelease`)
-        }
-        this.prerelease.length = 0
-        break
-
-      case 'major':
-        // If this is a pre-major version, bump up to the same major version.
-        // Otherwise increment major.
-        // 1.0.0-5 bumps to 1.0.0
-        // 1.1.0 bumps to 2.0.0
-        if (
-          this.minor !== 0 ||
-          this.patch !== 0 ||
-          this.prerelease.length === 0
-        ) {
-          this.major++
-        }
-        this.minor = 0
-        this.patch = 0
-        this.prerelease = []
-        break
-      case 'minor':
-        // If this is a pre-minor version, bump up to the same minor version.
-        // Otherwise increment minor.
-        // 1.2.0-5 bumps to 1.2.0
-        // 1.2.1 bumps to 1.3.0
-        if (this.patch !== 0 || this.prerelease.length === 0) {
-          this.minor++
-        }
-        this.patch = 0
-        this.prerelease = []
-        break
-      case 'patch':
-        // If this is not a pre-release version, it will increment the patch.
-        // If it is a pre-release it will bump up to the same patch version.
-        // 1.2.0-5 patches to 1.2.0
-        // 1.2.0 patches to 1.2.1
-        if (this.prerelease.length === 0) {
-          this.patch++
-        }
-        this.prerelease = []
-        break
-      // This probably shouldn't be used publicly.
-      // 1.0.0 'pre' would become 1.0.0-0 which is the wrong direction.
-      case 'pre': {
-        const base = Number(identifierBase) ? 1 : 0
-
-        if (this.prerelease.length === 0) {
-          this.prerelease = [base]
-        } else {
-          let i = this.prerelease.length
-          while (--i >= 0) {
-            if (typeof this.prerelease[i] === 'number') {
-              this.prerelease[i]++
-              i = -2
-            }
-          }
-          if (i === -1) {
-            // didn't increment anything
-            if (identifier === this.prerelease.join('.') && identifierBase === false) {
-              throw new Error('invalid increment argument: identifier already exists')
-            }
-            this.prerelease.push(base)
-          }
-        }
-        if (identifier) {
-          // 1.2.0-beta.1 bumps to 1.2.0-beta.2,
-          // 1.2.0-beta.fooblz or 1.2.0-beta bumps to 1.2.0-beta.0
-          let prerelease = [identifier, base]
-          if (identifierBase === false) {
-            prerelease = [identifier]
-          }
-          if (isPrereleaseIdentifier(this.prerelease, identifier)) {
-            const prereleaseBase = this.prerelease[identifier.split('.').length]
-            if (isNaN(prereleaseBase)) {
-              this.prerelease = prerelease
-            }
-          } else {
-            this.prerelease = prerelease
-          }
-        }
-        break
-      }
-      default:
-        throw new Error(`invalid increment argument: ${release}`)
-    }
-    this.raw = this.format()
-    if (this.build.length) {
-      this.raw += `+${this.build.join('.')}`
-    }
-    return this
-  }
-}
-
-module.exports = SemVer
-
-
-/***/ }),
-
-/***/ 1799:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const parse = __nccwpck_require__(16353)
-const clean = (version, options) => {
-  const s = parse(version.trim().replace(/^[=v]+/, ''), options)
-  return s ? s.version : null
-}
-module.exports = clean
-
-
-/***/ }),
-
-/***/ 28646:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const eq = __nccwpck_require__(55082)
-const neq = __nccwpck_require__(4974)
-const gt = __nccwpck_require__(16599)
-const gte = __nccwpck_require__(41236)
-const lt = __nccwpck_require__(3872)
-const lte = __nccwpck_require__(56717)
-
-const cmp = (a, op, b, loose) => {
-  switch (op) {
-    case '===':
-      if (typeof a === 'object') {
-        a = a.version
-      }
-      if (typeof b === 'object') {
-        b = b.version
-      }
-      return a === b
-
-    case '!==':
-      if (typeof a === 'object') {
-        a = a.version
-      }
-      if (typeof b === 'object') {
-        b = b.version
-      }
-      return a !== b
-
-    case '':
-    case '=':
-    case '==':
-      return eq(a, b, loose)
-
-    case '!=':
-      return neq(a, b, loose)
-
-    case '>':
-      return gt(a, b, loose)
-
-    case '>=':
-      return gte(a, b, loose)
-
-    case '<':
-      return lt(a, b, loose)
-
-    case '<=':
-      return lte(a, b, loose)
-
-    default:
-      throw new TypeError(`Invalid operator: ${op}`)
-  }
-}
-module.exports = cmp
-
-
-/***/ }),
-
-/***/ 35385:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const parse = __nccwpck_require__(16353)
-const { safeRe: re, t } = __nccwpck_require__(95471)
-
-const coerce = (version, options) => {
-  if (version instanceof SemVer) {
-    return version
-  }
-
-  if (typeof version === 'number') {
-    version = String(version)
-  }
-
-  if (typeof version !== 'string') {
-    return null
-  }
-
-  options = options || {}
-
-  let match = null
-  if (!options.rtl) {
-    match = version.match(options.includePrerelease ? re[t.COERCEFULL] : re[t.COERCE])
-  } else {
-    // Find the right-most coercible string that does not share
-    // a terminus with a more left-ward coercible string.
-    // Eg, '1.2.3.4' wants to coerce '2.3.4', not '3.4' or '4'
-    // With includePrerelease option set, '1.2.3.4-rc' wants to coerce '2.3.4-rc', not '2.3.4'
-    //
-    // Walk through the string checking with a /g regexp
-    // Manually set the index so as to pick up overlapping matches.
-    // Stop when we get a match that ends at the string end, since no
-    // coercible string can be more right-ward without the same terminus.
-    const coerceRtlRegex = options.includePrerelease ? re[t.COERCERTLFULL] : re[t.COERCERTL]
-    let next
-    while ((next = coerceRtlRegex.exec(version)) &&
-        (!match || match.index + match[0].length !== version.length)
-    ) {
-      if (!match ||
-            next.index + next[0].length !== match.index + match[0].length) {
-        match = next
-      }
-      coerceRtlRegex.lastIndex = next.index + next[1].length + next[2].length
-    }
-    // leave it in a clean state
-    coerceRtlRegex.lastIndex = -1
-  }
-
-  if (match === null) {
-    return null
-  }
-
-  const major = match[2]
-  const minor = match[3] || '0'
-  const patch = match[4] || '0'
-  const prerelease = options.includePrerelease && match[5] ? `-${match[5]}` : ''
-  const build = options.includePrerelease && match[6] ? `+${match[6]}` : ''
-
-  return parse(`${major}.${minor}.${patch}${prerelease}${build}`, options)
-}
-module.exports = coerce
-
-
-/***/ }),
-
-/***/ 37648:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const compareBuild = (a, b, loose) => {
-  const versionA = new SemVer(a, loose)
-  const versionB = new SemVer(b, loose)
-  return versionA.compare(versionB) || versionA.compareBuild(versionB)
-}
-module.exports = compareBuild
-
-
-/***/ }),
-
-/***/ 56874:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const compare = __nccwpck_require__(78469)
-const compareLoose = (a, b) => compare(a, b, true)
-module.exports = compareLoose
-
-
-/***/ }),
-
-/***/ 78469:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const compare = (a, b, loose) =>
-  new SemVer(a, loose).compare(new SemVer(b, loose))
-
-module.exports = compare
-
-
-/***/ }),
-
-/***/ 70711:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const parse = __nccwpck_require__(16353)
-
-const diff = (version1, version2) => {
-  const v1 = parse(version1, null, true)
-  const v2 = parse(version2, null, true)
-  const comparison = v1.compare(v2)
-
-  if (comparison === 0) {
-    return null
-  }
-
-  const v1Higher = comparison > 0
-  const highVersion = v1Higher ? v1 : v2
-  const lowVersion = v1Higher ? v2 : v1
-  const highHasPre = !!highVersion.prerelease.length
-  const lowHasPre = !!lowVersion.prerelease.length
-
-  if (lowHasPre && !highHasPre) {
-    // Going from prerelease -> no prerelease requires some special casing
-
-    // If the low version has only a major, then it will always be a major
-    // Some examples:
-    // 1.0.0-1 -> 1.0.0
-    // 1.0.0-1 -> 1.1.1
-    // 1.0.0-1 -> 2.0.0
-    if (!lowVersion.patch && !lowVersion.minor) {
-      return 'major'
-    }
-
-    // If the main part has no difference
-    if (lowVersion.compareMain(highVersion) === 0) {
-      if (lowVersion.minor && !lowVersion.patch) {
-        return 'minor'
-      }
-      return 'patch'
-    }
-  }
-
-  // add the `pre` prefix if we are going to a prerelease version
-  const prefix = highHasPre ? 'pre' : ''
-
-  if (v1.major !== v2.major) {
-    return prefix + 'major'
-  }
-
-  if (v1.minor !== v2.minor) {
-    return prefix + 'minor'
-  }
-
-  if (v1.patch !== v2.patch) {
-    return prefix + 'patch'
-  }
-
-  // high and low are prereleases
-  return 'prerelease'
-}
-
-module.exports = diff
-
-
-/***/ }),
-
-/***/ 55082:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const compare = __nccwpck_require__(78469)
-const eq = (a, b, loose) => compare(a, b, loose) === 0
-module.exports = eq
-
-
-/***/ }),
-
-/***/ 16599:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const compare = __nccwpck_require__(78469)
-const gt = (a, b, loose) => compare(a, b, loose) > 0
-module.exports = gt
-
-
-/***/ }),
-
-/***/ 41236:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const compare = __nccwpck_require__(78469)
-const gte = (a, b, loose) => compare(a, b, loose) >= 0
-module.exports = gte
-
-
-/***/ }),
-
-/***/ 62338:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-
-const inc = (version, release, options, identifier, identifierBase) => {
-  if (typeof (options) === 'string') {
-    identifierBase = identifier
-    identifier = options
-    options = undefined
-  }
-
-  try {
-    return new SemVer(
-      version instanceof SemVer ? version.version : version,
-      options
-    ).inc(release, identifier, identifierBase).version
-  } catch (er) {
-    return null
-  }
-}
-module.exports = inc
-
-
-/***/ }),
-
-/***/ 3872:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const compare = __nccwpck_require__(78469)
-const lt = (a, b, loose) => compare(a, b, loose) < 0
-module.exports = lt
-
-
-/***/ }),
-
-/***/ 56717:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const compare = __nccwpck_require__(78469)
-const lte = (a, b, loose) => compare(a, b, loose) <= 0
-module.exports = lte
-
-
-/***/ }),
-
-/***/ 68511:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const major = (a, loose) => new SemVer(a, loose).major
-module.exports = major
-
-
-/***/ }),
-
-/***/ 32603:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const minor = (a, loose) => new SemVer(a, loose).minor
-module.exports = minor
-
-
-/***/ }),
-
-/***/ 4974:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const compare = __nccwpck_require__(78469)
-const neq = (a, b, loose) => compare(a, b, loose) !== 0
-module.exports = neq
-
-
-/***/ }),
-
-/***/ 16353:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const parse = (version, options, throwErrors = false) => {
-  if (version instanceof SemVer) {
-    return version
-  }
-  try {
-    return new SemVer(version, options)
-  } catch (er) {
-    if (!throwErrors) {
-      return null
-    }
-    throw er
-  }
-}
-
-module.exports = parse
-
-
-/***/ }),
-
-/***/ 48756:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const patch = (a, loose) => new SemVer(a, loose).patch
-module.exports = patch
-
-
-/***/ }),
-
-/***/ 15714:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const parse = __nccwpck_require__(16353)
-const prerelease = (version, options) => {
-  const parsed = parse(version, options)
-  return (parsed && parsed.prerelease.length) ? parsed.prerelease : null
-}
-module.exports = prerelease
-
-
-/***/ }),
-
-/***/ 32173:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const compare = __nccwpck_require__(78469)
-const rcompare = (a, b, loose) => compare(b, a, loose)
-module.exports = rcompare
-
-
-/***/ }),
-
-/***/ 87192:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const compareBuild = __nccwpck_require__(37648)
-const rsort = (list, loose) => list.sort((a, b) => compareBuild(b, a, loose))
-module.exports = rsort
-
-
-/***/ }),
-
-/***/ 68011:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const Range = __nccwpck_require__(96782)
-const satisfies = (version, range, options) => {
-  try {
-    range = new Range(range, options)
-  } catch (er) {
-    return false
-  }
-  return range.test(version)
-}
-module.exports = satisfies
-
-
-/***/ }),
-
-/***/ 29872:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const compareBuild = __nccwpck_require__(37648)
-const sort = (list, loose) => list.sort((a, b) => compareBuild(a, b, loose))
-module.exports = sort
-
-
-/***/ }),
-
-/***/ 16114:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const parse = __nccwpck_require__(16353)
-const constants = __nccwpck_require__(45101)
-const SemVer = __nccwpck_require__(7163)
-
-const truncate = (version, truncation, options) => {
-  if (!constants.RELEASE_TYPES.includes(truncation)) {
-    return null
-  }
-
-  const clonedVersion = cloneInputVersion(version, options)
-  return clonedVersion && doTruncation(clonedVersion, truncation)
-}
-
-const cloneInputVersion = (version, options) => {
-  const versionStringToParse = (
-    version instanceof SemVer ? version.version : version
-  )
-
-  return parse(versionStringToParse, options)
-}
-
-const doTruncation = (version, truncation) => {
-  if (isPrerelease(truncation)) {
-    return version.version
-  }
-
-  version.prerelease = []
-
-  switch (truncation) {
-    case 'major':
-      version.minor = 0
-      version.patch = 0
-      break
-    case 'minor':
-      version.patch = 0
-      break
-  }
-
-  return version.format()
-}
-
-const isPrerelease = (type) => {
-  return type.startsWith('pre')
-}
-
-module.exports = truncate
-
-
-/***/ }),
-
-/***/ 58780:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const parse = __nccwpck_require__(16353)
-const valid = (version, options) => {
-  const v = parse(version, options)
-  return v ? v.version : null
-}
-module.exports = valid
-
-
-/***/ }),
-
-/***/ 62088:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-// just pre-load all the stuff that index.js lazily exports
-const internalRe = __nccwpck_require__(95471)
-const constants = __nccwpck_require__(45101)
-const SemVer = __nccwpck_require__(7163)
-const identifiers = __nccwpck_require__(73348)
-const parse = __nccwpck_require__(16353)
-const valid = __nccwpck_require__(58780)
-const clean = __nccwpck_require__(1799)
-const inc = __nccwpck_require__(62338)
-const diff = __nccwpck_require__(70711)
-const major = __nccwpck_require__(68511)
-const minor = __nccwpck_require__(32603)
-const patch = __nccwpck_require__(48756)
-const prerelease = __nccwpck_require__(15714)
-const compare = __nccwpck_require__(78469)
-const rcompare = __nccwpck_require__(32173)
-const compareLoose = __nccwpck_require__(56874)
-const compareBuild = __nccwpck_require__(37648)
-const sort = __nccwpck_require__(29872)
-const rsort = __nccwpck_require__(87192)
-const gt = __nccwpck_require__(16599)
-const lt = __nccwpck_require__(3872)
-const eq = __nccwpck_require__(55082)
-const neq = __nccwpck_require__(4974)
-const gte = __nccwpck_require__(41236)
-const lte = __nccwpck_require__(56717)
-const cmp = __nccwpck_require__(28646)
-const coerce = __nccwpck_require__(35385)
-const truncate = __nccwpck_require__(16114)
-const Comparator = __nccwpck_require__(89379)
-const Range = __nccwpck_require__(96782)
-const satisfies = __nccwpck_require__(68011)
-const toComparators = __nccwpck_require__(54750)
-const maxSatisfying = __nccwpck_require__(73193)
-const minSatisfying = __nccwpck_require__(68595)
-const minVersion = __nccwpck_require__(51866)
-const validRange = __nccwpck_require__(64737)
-const outside = __nccwpck_require__(10280)
-const gtr = __nccwpck_require__(12276)
-const ltr = __nccwpck_require__(15213)
-const intersects = __nccwpck_require__(23465)
-const simplifyRange = __nccwpck_require__(82028)
-const subset = __nccwpck_require__(61489)
-module.exports = {
-  parse,
-  valid,
-  clean,
-  inc,
-  diff,
-  major,
-  minor,
-  patch,
-  prerelease,
-  compare,
-  rcompare,
-  compareLoose,
-  compareBuild,
-  sort,
-  rsort,
-  gt,
-  lt,
-  eq,
-  neq,
-  gte,
-  lte,
-  cmp,
-  coerce,
-  truncate,
-  Comparator,
-  Range,
-  satisfies,
-  toComparators,
-  maxSatisfying,
-  minSatisfying,
-  minVersion,
-  validRange,
-  outside,
-  gtr,
-  ltr,
-  intersects,
-  simplifyRange,
-  subset,
-  SemVer,
-  re: internalRe.re,
-  src: internalRe.src,
-  tokens: internalRe.t,
-  SEMVER_SPEC_VERSION: constants.SEMVER_SPEC_VERSION,
-  RELEASE_TYPES: constants.RELEASE_TYPES,
-  compareIdentifiers: identifiers.compareIdentifiers,
-  rcompareIdentifiers: identifiers.rcompareIdentifiers,
-}
-
-
-/***/ }),
-
-/***/ 45101:
-/***/ ((module) => {
-
-"use strict";
-
-
-// Note: this is the semver.org version of the spec that it implements
-// Not necessarily the package version of this code.
-const SEMVER_SPEC_VERSION = '2.0.0'
-
-const MAX_LENGTH = 256
-const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER ||
-/* istanbul ignore next */ 9007199254740991
-
-// Max safe segment length for coercion.
-const MAX_SAFE_COMPONENT_LENGTH = 16
-
-// Max safe length for a build identifier. The max length minus 6 characters for
-// the shortest version with a build 0.0.0+BUILD.
-const MAX_SAFE_BUILD_LENGTH = MAX_LENGTH - 6
-
-const RELEASE_TYPES = [
-  'major',
-  'premajor',
-  'minor',
-  'preminor',
-  'patch',
-  'prepatch',
-  'prerelease',
-]
-
-module.exports = {
-  MAX_LENGTH,
-  MAX_SAFE_COMPONENT_LENGTH,
-  MAX_SAFE_BUILD_LENGTH,
-  MAX_SAFE_INTEGER,
-  RELEASE_TYPES,
-  SEMVER_SPEC_VERSION,
-  FLAG_INCLUDE_PRERELEASE: 0b001,
-  FLAG_LOOSE: 0b010,
-}
-
-
-/***/ }),
-
-/***/ 1159:
-/***/ ((module) => {
-
-"use strict";
-
-
-const debug = (
-  typeof process === 'object' &&
-  process.env &&
-  process.env.NODE_DEBUG &&
-  /\bsemver\b/i.test(process.env.NODE_DEBUG)
-) ? (...args) => console.error('SEMVER', ...args)
-  : () => {}
-
-module.exports = debug
-
-
-/***/ }),
-
-/***/ 73348:
-/***/ ((module) => {
-
-"use strict";
-
-
-const numeric = /^[0-9]+$/
-const compareIdentifiers = (a, b) => {
-  if (typeof a === 'number' && typeof b === 'number') {
-    return a === b ? 0 : a < b ? -1 : 1
-  }
-
-  const anum = numeric.test(a)
-  const bnum = numeric.test(b)
-
-  if (anum && bnum) {
-    a = +a
-    b = +b
-  }
-
-  return a === b ? 0
-    : (anum && !bnum) ? -1
-    : (bnum && !anum) ? 1
-    : a < b ? -1
-    : 1
-}
-
-const rcompareIdentifiers = (a, b) => compareIdentifiers(b, a)
-
-module.exports = {
-  compareIdentifiers,
-  rcompareIdentifiers,
-}
-
-
-/***/ }),
-
-/***/ 61383:
-/***/ ((module) => {
-
-"use strict";
-
-
-class LRUCache {
-  constructor () {
-    this.max = 1000
-    this.map = new Map()
-  }
-
-  get (key) {
-    const value = this.map.get(key)
-    if (value === undefined) {
-      return undefined
-    } else {
-      // Remove the key from the map and add it to the end
-      this.map.delete(key)
-      this.map.set(key, value)
-      return value
-    }
-  }
-
-  delete (key) {
-    return this.map.delete(key)
-  }
-
-  set (key, value) {
-    const deleted = this.delete(key)
-
-    if (!deleted && value !== undefined) {
-      // If cache is full, delete the least recently used item
-      if (this.map.size >= this.max) {
-        const firstKey = this.map.keys().next().value
-        this.delete(firstKey)
-      }
-
-      this.map.set(key, value)
-    }
-
-    return this
-  }
-}
-
-module.exports = LRUCache
-
-
-/***/ }),
-
-/***/ 70356:
-/***/ ((module) => {
-
-"use strict";
-
-
-// parse out just the options we care about
-const looseOption = Object.freeze({ loose: true })
-const emptyOpts = Object.freeze({ })
-const parseOptions = options => {
-  if (!options) {
-    return emptyOpts
-  }
-
-  if (typeof options !== 'object') {
-    return looseOption
-  }
-
-  return options
-}
-module.exports = parseOptions
-
-
-/***/ }),
-
-/***/ 95471:
-/***/ ((module, exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const {
-  MAX_SAFE_COMPONENT_LENGTH,
-  MAX_SAFE_BUILD_LENGTH,
-  MAX_LENGTH,
-} = __nccwpck_require__(45101)
-const debug = __nccwpck_require__(1159)
-exports = module.exports = {}
-
-// The actual regexps go on exports.re
-const re = exports.re = []
-const safeRe = exports.safeRe = []
-const src = exports.src = []
-const safeSrc = exports.safeSrc = []
-const t = exports.t = {}
-let R = 0
-
-const LETTERDASHNUMBER = '[a-zA-Z0-9-]'
-
-// Replace some greedy regex tokens to prevent regex dos issues. These regex are
-// used internally via the safeRe object since all inputs in this library get
-// normalized first to trim and collapse all extra whitespace. The original
-// regexes are exported for userland consumption and lower level usage. A
-// future breaking change could export the safer regex only with a note that
-// all input should have extra whitespace removed.
-const safeRegexReplacements = [
-  ['\\s', 1],
-  ['\\d', MAX_LENGTH],
-  [LETTERDASHNUMBER, MAX_SAFE_BUILD_LENGTH],
-]
-
-const makeSafeRegex = (value) => {
-  for (const [token, max] of safeRegexReplacements) {
-    value = value
-      .split(`${token}*`).join(`${token}{0,${max}}`)
-      .split(`${token}+`).join(`${token}{1,${max}}`)
-  }
-  return value
-}
-
-const createToken = (name, value, isGlobal) => {
-  const safe = makeSafeRegex(value)
-  const index = R++
-  debug(name, index, value)
-  t[name] = index
-  src[index] = value
-  safeSrc[index] = safe
-  re[index] = new RegExp(value, isGlobal ? 'g' : undefined)
-  safeRe[index] = new RegExp(safe, isGlobal ? 'g' : undefined)
-}
-
-// The following Regular Expressions can be used for tokenizing,
-// validating, and parsing SemVer version strings.
-
-// ## Numeric Identifier
-// A single `0`, or a non-zero digit followed by zero or more digits.
-
-createToken('NUMERICIDENTIFIER', '0|[1-9]\\d*')
-createToken('NUMERICIDENTIFIERLOOSE', '\\d+')
-
-// ## Non-numeric Identifier
-// Zero or more digits, followed by a letter or hyphen, and then zero or
-// more letters, digits, or hyphens.
-
-createToken('NONNUMERICIDENTIFIER', `\\d*[a-zA-Z-]${LETTERDASHNUMBER}*`)
-
-// ## Main Version
-// Three dot-separated numeric identifiers.
-
-createToken('MAINVERSION', `(${src[t.NUMERICIDENTIFIER]})\\.` +
-                   `(${src[t.NUMERICIDENTIFIER]})\\.` +
-                   `(${src[t.NUMERICIDENTIFIER]})`)
-
-createToken('MAINVERSIONLOOSE', `(${src[t.NUMERICIDENTIFIERLOOSE]})\\.` +
-                        `(${src[t.NUMERICIDENTIFIERLOOSE]})\\.` +
-                        `(${src[t.NUMERICIDENTIFIERLOOSE]})`)
-
-// ## Pre-release Version Identifier
-// A numeric identifier, or a non-numeric identifier.
-// Non-numeric identifiers include numeric identifiers but can be longer.
-// Therefore non-numeric identifiers must go first.
-
-createToken('PRERELEASEIDENTIFIER', `(?:${src[t.NONNUMERICIDENTIFIER]
-}|${src[t.NUMERICIDENTIFIER]})`)
-
-createToken('PRERELEASEIDENTIFIERLOOSE', `(?:${src[t.NONNUMERICIDENTIFIER]
-}|${src[t.NUMERICIDENTIFIERLOOSE]})`)
-
-// ## Pre-release Version
-// Hyphen, followed by one or more dot-separated pre-release version
-// identifiers.
-
-createToken('PRERELEASE', `(?:-(${src[t.PRERELEASEIDENTIFIER]
-}(?:\\.${src[t.PRERELEASEIDENTIFIER]})*))`)
-
-createToken('PRERELEASELOOSE', `(?:-?(${src[t.PRERELEASEIDENTIFIERLOOSE]
-}(?:\\.${src[t.PRERELEASEIDENTIFIERLOOSE]})*))`)
-
-// ## Build Metadata Identifier
-// Any combination of digits, letters, or hyphens.
-
-createToken('BUILDIDENTIFIER', `${LETTERDASHNUMBER}+`)
-
-// ## Build Metadata
-// Plus sign, followed by one or more period-separated build metadata
-// identifiers.
-
-createToken('BUILD', `(?:\\+(${src[t.BUILDIDENTIFIER]
-}(?:\\.${src[t.BUILDIDENTIFIER]})*))`)
-
-// ## Full Version String
-// A main version, followed optionally by a pre-release version and
-// build metadata.
-
-// Note that the only major, minor, patch, and pre-release sections of
-// the version string are capturing groups.  The build metadata is not a
-// capturing group, because it should not ever be used in version
-// comparison.
-
-createToken('FULLPLAIN', `v?${src[t.MAINVERSION]
-}${src[t.PRERELEASE]}?${
-  src[t.BUILD]}?`)
-
-createToken('FULL', `^${src[t.FULLPLAIN]}$`)
-
-// like full, but allows v1.2.3 and =1.2.3, which people do sometimes.
-// also, 1.0.0alpha1 (prerelease without the hyphen) which is pretty
-// common in the npm registry.
-createToken('LOOSEPLAIN', `[v=\\s]*${src[t.MAINVERSIONLOOSE]
-}${src[t.PRERELEASELOOSE]}?${
-  src[t.BUILD]}?`)
-
-createToken('LOOSE', `^${src[t.LOOSEPLAIN]}$`)
-
-createToken('GTLT', '((?:<|>)?=?)')
-
-// Something like "2.*" or "1.2.x".
-// Note that "x.x" is a valid xRange identifier, meaning "any version"
-// Only the first item is strictly required.
-createToken('XRANGEIDENTIFIERLOOSE', `${src[t.NUMERICIDENTIFIERLOOSE]}|x|X|\\*`)
-createToken('XRANGEIDENTIFIER', `${src[t.NUMERICIDENTIFIER]}|x|X|\\*`)
-
-createToken('XRANGEPLAIN', `[v=\\s]*(${src[t.XRANGEIDENTIFIER]})` +
-                   `(?:\\.(${src[t.XRANGEIDENTIFIER]})` +
-                   `(?:\\.(${src[t.XRANGEIDENTIFIER]})` +
-                   `(?:${src[t.PRERELEASE]})?${
-                     src[t.BUILD]}?` +
-                   `)?)?`)
-
-createToken('XRANGEPLAINLOOSE', `[v=\\s]*(${src[t.XRANGEIDENTIFIERLOOSE]})` +
-                        `(?:\\.(${src[t.XRANGEIDENTIFIERLOOSE]})` +
-                        `(?:\\.(${src[t.XRANGEIDENTIFIERLOOSE]})` +
-                        `(?:${src[t.PRERELEASELOOSE]})?${
-                          src[t.BUILD]}?` +
-                        `)?)?`)
-
-createToken('XRANGE', `^${src[t.GTLT]}\\s*${src[t.XRANGEPLAIN]}$`)
-createToken('XRANGELOOSE', `^${src[t.GTLT]}\\s*${src[t.XRANGEPLAINLOOSE]}$`)
-
-// Coercion.
-// Extract anything that could conceivably be a part of a valid semver
-createToken('COERCEPLAIN', `${'(^|[^\\d])' +
-              '(\\d{1,'}${MAX_SAFE_COMPONENT_LENGTH}})` +
-              `(?:\\.(\\d{1,${MAX_SAFE_COMPONENT_LENGTH}}))?` +
-              `(?:\\.(\\d{1,${MAX_SAFE_COMPONENT_LENGTH}}))?`)
-createToken('COERCE', `${src[t.COERCEPLAIN]}(?:$|[^\\d])`)
-createToken('COERCEFULL', src[t.COERCEPLAIN] +
-              `(?:${src[t.PRERELEASE]})?` +
-              `(?:${src[t.BUILD]})?` +
-              `(?:$|[^\\d])`)
-createToken('COERCERTL', src[t.COERCE], true)
-createToken('COERCERTLFULL', src[t.COERCEFULL], true)
-
-// Tilde ranges.
-// Meaning is "reasonably at or greater than"
-createToken('LONETILDE', '(?:~>?)')
-
-createToken('TILDETRIM', `(\\s*)${src[t.LONETILDE]}\\s+`, true)
-exports.tildeTrimReplace = '$1~'
-
-createToken('TILDE', `^${src[t.LONETILDE]}${src[t.XRANGEPLAIN]}$`)
-createToken('TILDELOOSE', `^${src[t.LONETILDE]}${src[t.XRANGEPLAINLOOSE]}$`)
-
-// Caret ranges.
-// Meaning is "at least and backwards compatible with"
-createToken('LONECARET', '(?:\\^)')
-
-createToken('CARETTRIM', `(\\s*)${src[t.LONECARET]}\\s+`, true)
-exports.caretTrimReplace = '$1^'
-
-createToken('CARET', `^${src[t.LONECARET]}${src[t.XRANGEPLAIN]}$`)
-createToken('CARETLOOSE', `^${src[t.LONECARET]}${src[t.XRANGEPLAINLOOSE]}$`)
-
-// A simple gt/lt/eq thing, or just "" to indicate "any version"
-createToken('COMPARATORLOOSE', `^${src[t.GTLT]}\\s*(${src[t.LOOSEPLAIN]})$|^$`)
-createToken('COMPARATOR', `^${src[t.GTLT]}\\s*(${src[t.FULLPLAIN]})$|^$`)
-
-// An expression to strip any whitespace between the gtlt and the thing
-// it modifies, so that `> 1.2.3` ==> `>1.2.3`
-createToken('COMPARATORTRIM', `(\\s*)${src[t.GTLT]
-}\\s*(${src[t.LOOSEPLAIN]}|${src[t.XRANGEPLAIN]})`, true)
-exports.comparatorTrimReplace = '$1$2$3'
-
-// Something like `1.2.3 - 1.2.4`
-// Note that these all use the loose form, because they'll be
-// checked against either the strict or loose comparator form
-// later.
-createToken('HYPHENRANGE', `^\\s*(${src[t.XRANGEPLAIN]})` +
-                   `\\s+-\\s+` +
-                   `(${src[t.XRANGEPLAIN]})` +
-                   `\\s*$`)
-
-createToken('HYPHENRANGELOOSE', `^\\s*(${src[t.XRANGEPLAINLOOSE]})` +
-                        `\\s+-\\s+` +
-                        `(${src[t.XRANGEPLAINLOOSE]})` +
-                        `\\s*$`)
-
-// Star ranges basically just allow anything at all.
-createToken('STAR', '(<|>)?=?\\s*\\*')
-// >=0.0.0 is like a star
-createToken('GTE0', '^\\s*>=\\s*0\\.0\\.0\\s*$')
-createToken('GTE0PRE', '^\\s*>=\\s*0\\.0\\.0-0\\s*$')
-
-
-/***/ }),
-
-/***/ 12276:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-// Determine if version is greater than all the versions possible in the range.
-const outside = __nccwpck_require__(10280)
-const gtr = (version, range, options) => outside(version, range, '>', options)
-module.exports = gtr
-
-
-/***/ }),
-
-/***/ 23465:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const Range = __nccwpck_require__(96782)
-const intersects = (r1, r2, options) => {
-  r1 = new Range(r1, options)
-  r2 = new Range(r2, options)
-  return r1.intersects(r2, options)
-}
-module.exports = intersects
-
-
-/***/ }),
-
-/***/ 15213:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const outside = __nccwpck_require__(10280)
-// Determine if version is less than all the versions possible in the range
-const ltr = (version, range, options) => outside(version, range, '<', options)
-module.exports = ltr
-
-
-/***/ }),
-
-/***/ 73193:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const Range = __nccwpck_require__(96782)
-
-const maxSatisfying = (versions, range, options) => {
-  let max = null
-  let maxSV = null
-  let rangeObj = null
-  try {
-    rangeObj = new Range(range, options)
-  } catch (er) {
-    return null
-  }
-  versions.forEach((v) => {
-    if (rangeObj.test(v)) {
-      // satisfies(v, range, options)
-      if (!max || maxSV.compare(v) === -1) {
-        // compare(max, v, true)
-        max = v
-        maxSV = new SemVer(max, options)
-      }
-    }
-  })
-  return max
-}
-module.exports = maxSatisfying
-
-
-/***/ }),
-
-/***/ 68595:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const Range = __nccwpck_require__(96782)
-const minSatisfying = (versions, range, options) => {
-  let min = null
-  let minSV = null
-  let rangeObj = null
-  try {
-    rangeObj = new Range(range, options)
-  } catch (er) {
-    return null
-  }
-  versions.forEach((v) => {
-    if (rangeObj.test(v)) {
-      // satisfies(v, range, options)
-      if (!min || minSV.compare(v) === 1) {
-        // compare(min, v, true)
-        min = v
-        minSV = new SemVer(min, options)
-      }
-    }
-  })
-  return min
-}
-module.exports = minSatisfying
-
-
-/***/ }),
-
-/***/ 51866:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const Range = __nccwpck_require__(96782)
-const gt = __nccwpck_require__(16599)
-
-const minVersion = (range, loose) => {
-  range = new Range(range, loose)
-
-  let minver = new SemVer('0.0.0')
-  if (range.test(minver)) {
-    return minver
-  }
-
-  minver = new SemVer('0.0.0-0')
-  if (range.test(minver)) {
-    return minver
-  }
-
-  minver = null
-  for (let i = 0; i < range.set.length; ++i) {
-    const comparators = range.set[i]
-
-    let setMin = null
-    comparators.forEach((comparator) => {
-      // Clone to avoid manipulating the comparator's semver object.
-      const compver = new SemVer(comparator.semver.version)
-      switch (comparator.operator) {
-        case '>':
-          if (compver.prerelease.length === 0) {
-            compver.patch++
-          } else {
-            compver.prerelease.push(0)
-          }
-          compver.raw = compver.format()
-          /* fallthrough */
-        case '':
-        case '>=':
-          if (!setMin || gt(compver, setMin)) {
-            setMin = compver
-          }
-          break
-        case '<':
-        case '<=':
-          /* Ignore maximum versions */
-          break
-        /* istanbul ignore next */
-        default:
-          throw new Error(`Unexpected operation: ${comparator.operator}`)
-      }
-    })
-    if (setMin && (!minver || gt(minver, setMin))) {
-      minver = setMin
-    }
-  }
-
-  if (minver && range.test(minver)) {
-    return minver
-  }
-
-  return null
-}
-module.exports = minVersion
-
-
-/***/ }),
-
-/***/ 10280:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const SemVer = __nccwpck_require__(7163)
-const Comparator = __nccwpck_require__(89379)
-const { ANY } = Comparator
-const Range = __nccwpck_require__(96782)
-const satisfies = __nccwpck_require__(68011)
-const gt = __nccwpck_require__(16599)
-const lt = __nccwpck_require__(3872)
-const lte = __nccwpck_require__(56717)
-const gte = __nccwpck_require__(41236)
-
-const outside = (version, range, hilo, options) => {
-  version = new SemVer(version, options)
-  range = new Range(range, options)
-
-  let gtfn, ltefn, ltfn, comp, ecomp
-  switch (hilo) {
-    case '>':
-      gtfn = gt
-      ltefn = lte
-      ltfn = lt
-      comp = '>'
-      ecomp = '>='
-      break
-    case '<':
-      gtfn = lt
-      ltefn = gte
-      ltfn = gt
-      comp = '<'
-      ecomp = '<='
-      break
-    default:
-      throw new TypeError('Must provide a hilo val of "<" or ">"')
-  }
-
-  // If it satisfies the range it is not outside
-  if (satisfies(version, range, options)) {
-    return false
-  }
-
-  // From now on, variable terms are as if we're in "gtr" mode.
-  // but note that everything is flipped for the "ltr" function.
-
-  for (let i = 0; i < range.set.length; ++i) {
-    const comparators = range.set[i]
-
-    let high = null
-    let low = null
-
-    comparators.forEach((comparator) => {
-      if (comparator.semver === ANY) {
-        comparator = new Comparator('>=0.0.0')
-      }
-      high = high || comparator
-      low = low || comparator
-      if (gtfn(comparator.semver, high.semver, options)) {
-        high = comparator
-      } else if (ltfn(comparator.semver, low.semver, options)) {
-        low = comparator
-      }
-    })
-
-    // If the edge version comparator has a operator then our version
-    // isn't outside it
-    if (high.operator === comp || high.operator === ecomp) {
-      return false
-    }
-
-    // If the lowest version comparator has an operator and our version
-    // is less than it then it isn't higher than the range
-    if ((!low.operator || low.operator === comp) &&
-        ltefn(version, low.semver)) {
-      return false
-    } else if (low.operator === ecomp && ltfn(version, low.semver)) {
-      return false
-    }
-  }
-  return true
-}
-
-module.exports = outside
-
-
-/***/ }),
-
-/***/ 82028:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-// given a set of versions and a range, create a "simplified" range
-// that includes the same versions that the original range does
-// If the original range is shorter than the simplified one, return that.
-const satisfies = __nccwpck_require__(68011)
-const compare = __nccwpck_require__(78469)
-module.exports = (versions, range, options) => {
-  const set = []
-  let first = null
-  let prev = null
-  const v = versions.sort((a, b) => compare(a, b, options))
-  for (const version of v) {
-    const included = satisfies(version, range, options)
-    if (included) {
-      prev = version
-      if (!first) {
-        first = version
-      }
-    } else {
-      if (prev) {
-        set.push([first, prev])
-      }
-      prev = null
-      first = null
-    }
-  }
-  if (first) {
-    set.push([first, null])
-  }
-
-  const ranges = []
-  for (const [min, max] of set) {
-    if (min === max) {
-      ranges.push(min)
-    } else if (!max && min === v[0]) {
-      ranges.push('*')
-    } else if (!max) {
-      ranges.push(`>=${min}`)
-    } else if (min === v[0]) {
-      ranges.push(`<=${max}`)
-    } else {
-      ranges.push(`${min} - ${max}`)
-    }
-  }
-  const simplified = ranges.join(' || ')
-  const original = typeof range.raw === 'string' ? range.raw : String(range)
-  return simplified.length < original.length ? simplified : range
-}
-
-
-/***/ }),
-
-/***/ 61489:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const Range = __nccwpck_require__(96782)
-const Comparator = __nccwpck_require__(89379)
-const { ANY } = Comparator
-const satisfies = __nccwpck_require__(68011)
-const compare = __nccwpck_require__(78469)
-
-// Complex range `r1 || r2 || ...` is a subset of `R1 || R2 || ...` iff:
-// - Every simple range `r1, r2, ...` is a null set, OR
-// - Every simple range `r1, r2, ...` which is not a null set is a subset of
-//   some `R1, R2, ...`
-//
-// Simple range `c1 c2 ...` is a subset of simple range `C1 C2 ...` iff:
-// - If c is only the ANY comparator
-//   - If C is only the ANY comparator, return true
-//   - Else if in prerelease mode, return false
-//   - else replace c with `[>=0.0.0]`
-// - If C is only the ANY comparator
-//   - if in prerelease mode, return true
-//   - else replace C with `[>=0.0.0]`
-// - Let EQ be the set of = comparators in c
-// - If EQ is more than one, return true (null set)
-// - Let GT be the highest > or >= comparator in c
-// - Let LT be the lowest < or <= comparator in c
-// - If GT and LT, and GT.semver > LT.semver, return true (null set)
-// - If any C is a = range, and GT or LT are set, return false
-// - If EQ
-//   - If GT, and EQ does not satisfy GT, return true (null set)
-//   - If LT, and EQ does not satisfy LT, return true (null set)
-//   - If EQ satisfies every C, return true
-//   - Else return false
-// - If GT
-//   - If GT.semver is lower than any > or >= comp in C, return false
-//   - If GT is >=, and GT.semver does not satisfy every C, return false
-//   - If GT.semver has a prerelease, and not in prerelease mode
-//     - If no C has a prerelease and the GT.semver tuple, return false
-// - If LT
-//   - If LT.semver is greater than any < or <= comp in C, return false
-//   - If LT is <=, and LT.semver does not satisfy every C, return false
-//   - If LT.semver has a prerelease, and not in prerelease mode
-//     - If no C has a prerelease and the LT.semver tuple, return false
-// - Else return true
-
-const subset = (sub, dom, options = {}) => {
-  if (sub === dom) {
-    return true
-  }
-
-  sub = new Range(sub, options)
-  dom = new Range(dom, options)
-  let sawNonNull = false
-
-  OUTER: for (const simpleSub of sub.set) {
-    for (const simpleDom of dom.set) {
-      const isSub = simpleSubset(simpleSub, simpleDom, options)
-      sawNonNull = sawNonNull || isSub !== null
-      if (isSub) {
-        continue OUTER
-      }
-    }
-    // the null set is a subset of everything, but null simple ranges in
-    // a complex range should be ignored.  so if we saw a non-null range,
-    // then we know this isn't a subset, but if EVERY simple range was null,
-    // then it is a subset.
-    if (sawNonNull) {
-      return false
-    }
-  }
-  return true
-}
-
-const minimumVersionWithPreRelease = [new Comparator('>=0.0.0-0')]
-const minimumVersion = [new Comparator('>=0.0.0')]
-
-const simpleSubset = (sub, dom, options) => {
-  if (sub === dom) {
-    return true
-  }
-
-  if (sub.length === 1 && sub[0].semver === ANY) {
-    if (dom.length === 1 && dom[0].semver === ANY) {
-      return true
-    } else if (options.includePrerelease) {
-      sub = minimumVersionWithPreRelease
-    } else {
-      sub = minimumVersion
-    }
-  }
-
-  if (dom.length === 1 && dom[0].semver === ANY) {
-    if (options.includePrerelease) {
-      return true
-    } else {
-      dom = minimumVersion
-    }
-  }
-
-  const eqSet = new Set()
-  let gt, lt
-  for (const c of sub) {
-    if (c.operator === '>' || c.operator === '>=') {
-      gt = higherGT(gt, c, options)
-    } else if (c.operator === '<' || c.operator === '<=') {
-      lt = lowerLT(lt, c, options)
-    } else {
-      eqSet.add(c.semver)
-    }
-  }
-
-  if (eqSet.size > 1) {
-    return null
-  }
-
-  let gtltComp
-  if (gt && lt) {
-    gtltComp = compare(gt.semver, lt.semver, options)
-    if (gtltComp > 0) {
-      return null
-    } else if (gtltComp === 0 && (gt.operator !== '>=' || lt.operator !== '<=')) {
-      return null
-    }
-  }
-
-  // will iterate one or zero times
-  for (const eq of eqSet) {
-    if (gt && !satisfies(eq, String(gt), options)) {
-      return null
-    }
-
-    if (lt && !satisfies(eq, String(lt), options)) {
-      return null
-    }
-
-    for (const c of dom) {
-      if (!satisfies(eq, String(c), options)) {
-        return false
-      }
-    }
-
-    return true
-  }
-
-  let higher, lower
-  let hasDomLT, hasDomGT
-  // if the subset has a prerelease, we need a comparator in the superset
-  // with the same tuple and a prerelease, or it's not a subset
-  let needDomLTPre = lt &&
-    !options.includePrerelease &&
-    lt.semver.prerelease.length ? lt.semver : false
-  let needDomGTPre = gt &&
-    !options.includePrerelease &&
-    gt.semver.prerelease.length ? gt.semver : false
-  // exception: <1.2.3-0 is the same as <1.2.3
-  if (needDomLTPre && needDomLTPre.prerelease.length === 1 &&
-      lt.operator === '<' && needDomLTPre.prerelease[0] === 0) {
-    needDomLTPre = false
-  }
-
-  for (const c of dom) {
-    hasDomGT = hasDomGT || c.operator === '>' || c.operator === '>='
-    hasDomLT = hasDomLT || c.operator === '<' || c.operator === '<='
-    if (gt) {
-      if (needDomGTPre) {
-        if (c.semver.prerelease && c.semver.prerelease.length &&
-            c.semver.major === needDomGTPre.major &&
-            c.semver.minor === needDomGTPre.minor &&
-            c.semver.patch === needDomGTPre.patch) {
-          needDomGTPre = false
-        }
-      }
-      if (c.operator === '>' || c.operator === '>=') {
-        higher = higherGT(gt, c, options)
-        if (higher === c && higher !== gt) {
-          return false
-        }
-      } else if (gt.operator === '>=' && !c.test(gt.semver)) {
-        return false
-      }
-    }
-    if (lt) {
-      if (needDomLTPre) {
-        if (c.semver.prerelease && c.semver.prerelease.length &&
-            c.semver.major === needDomLTPre.major &&
-            c.semver.minor === needDomLTPre.minor &&
-            c.semver.patch === needDomLTPre.patch) {
-          needDomLTPre = false
-        }
-      }
-      if (c.operator === '<' || c.operator === '<=') {
-        lower = lowerLT(lt, c, options)
-        if (lower === c && lower !== lt) {
-          return false
-        }
-      } else if (lt.operator === '<=' && !c.test(lt.semver)) {
-        return false
-      }
-    }
-    if (!c.operator && (lt || gt) && gtltComp !== 0) {
-      return false
-    }
-  }
-
-  // if there was a < or >, and nothing in the dom, then must be false
-  // UNLESS it was limited by another range in the other direction.
-  // Eg, >1.0.0 <1.0.1 is still a subset of <2.0.0
-  if (gt && hasDomLT && !lt && gtltComp !== 0) {
-    return false
-  }
-
-  if (lt && hasDomGT && !gt && gtltComp !== 0) {
-    return false
-  }
-
-  // we needed a prerelease range in a specific tuple, but didn't get one
-  // then this isn't a subset.  eg >=1.2.3-pre is not a subset of >=1.0.0,
-  // because it includes prereleases in the 1.2.3 tuple
-  if (needDomGTPre || needDomLTPre) {
-    return false
-  }
-
-  return true
-}
-
-// >=1.2.3 is lower than >1.2.3
-const higherGT = (a, b, options) => {
-  if (!a) {
-    return b
-  }
-  const comp = compare(a.semver, b.semver, options)
-  return comp > 0 ? a
-    : comp < 0 ? b
-    : b.operator === '>' && a.operator === '>=' ? b
-    : a
-}
-
-// <=1.2.3 is higher than <1.2.3
-const lowerLT = (a, b, options) => {
-  if (!a) {
-    return b
-  }
-  const comp = compare(a.semver, b.semver, options)
-  return comp < 0 ? a
-    : comp > 0 ? b
-    : b.operator === '<' && a.operator === '<=' ? b
-    : a
-}
-
-module.exports = subset
-
-
-/***/ }),
-
-/***/ 54750:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const Range = __nccwpck_require__(96782)
-
-// Mostly just for testing and legacy API reasons
-const toComparators = (range, options) =>
-  new Range(range, options).set
-    .map(comp => comp.map(c => c.value).join(' ').trim().split(' '))
-
-module.exports = toComparators
-
-
-/***/ }),
-
-/***/ 64737:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-
-
-const Range = __nccwpck_require__(96782)
-const validRange = (range, options) => {
-  try {
-    // Return '*' instead of '' so that truthiness works.
-    // This will throw if it's invalid anyway
-    return new Range(range, options).range || '*'
-  } catch (er) {
-    return null
-  }
-}
-module.exports = validRange
 
 
 /***/ }),
@@ -81302,193 +77827,207 @@ module.exports = Yaml;
 
 /***/ }),
 
-/***/ 42316:
+/***/ 42494:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CloudflareError = void 0;
-exports.createCloudflareKV = createCloudflareKV;
-exports.parseRolloutValue = parseRolloutValue;
-exports.patchRolloutInKV = patchRolloutInKV;
-exports.patchRolloutInEnvironments = patchRolloutInEnvironments;
+exports.BrokerError = void 0;
+exports.createBrokerClient = createBrokerClient;
+const core = __importStar(__nccwpck_require__(37484));
 const node_fetch_1 = __importDefault(__nccwpck_require__(26705));
-const rollouts_lib_1 = __nccwpck_require__(563);
 const retry_1 = __nccwpck_require__(49809);
-/** Carries the HTTP status so `withRetry` can tell a 429/5xx from a 4xx. */
-class CloudflareError extends Error {
-    constructor(message, status) {
+/**
+ * A failure the broker described. `code` is its stable contract — branch on that, never on
+ * the message.
+ */
+class BrokerError extends Error {
+    constructor(code, status, message, details = {}, retryAfterSeconds) {
         super(message);
+        this.code = code;
         this.status = status;
-        this.name = "CloudflareError";
+        this.details = details;
+        this.retryAfterSeconds = retryAfterSeconds;
+        this.name = "BrokerError";
     }
 }
-exports.CloudflareError = CloudflareError;
-/** Upstream bodies are untrusted and can be long; keep annotations readable. */
-function truncate(text, max = 300) {
-    return text.length > max ? `${text.slice(0, max)}… (${text.length} bytes)` : text;
-}
-/**
- * Cloudflare KV REST client. Same endpoint shape and `Authorization: Bearer`
- * auth as `webhooks-receiver/src/adapters/cloudflare.ts`, narrowed to a single
- * namespace (the environment is resolved to a namespace id before this point).
- *
- * Every call is retried on a 429/5xx/network error: KV writes happen after the
- * bytes are already in S3, so a transient blip must not leave the rollout
- * half-applied.
- */
-function createCloudflareKV(opts) {
+exports.BrokerError = BrokerError;
+function createBrokerClient(opts) {
     const doFetch = opts.fetch || node_fetch_1.default;
-    const retryOpts = { sleep: opts.sleep, onRetry: opts.onRetry };
-    // A KV key is a single opaque path segment — encodeURIComponent (not
-    // encodeURI) so `/`, `.`, `?`, `#` can't alter the request path.
-    const valueUrl = (key) => `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/storage/kv/namespaces/${opts.namespaceId}/values/${encodeURIComponent(key)}`;
+    // A fresh token per call on purpose: they are short-lived, and an upload long enough to
+    // need a credential refresh is long enough for a cached one to have expired.
+    const getToken = opts.getToken || (() => core.getIDToken(opts.audience));
+    async function post(path, body) {
+        const token = await getToken();
+        return (0, retry_1.withRetry)(`broker ${path}`, async () => {
+            const response = await doFetch(`${opts.baseUrl.replace(/\/+$/, "")}${path}`, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify(body),
+            });
+            const text = await response.text();
+            if (response.ok || response.status === 202) {
+                return JSON.parse(text);
+            }
+            let envelope = {};
+            try {
+                envelope = JSON.parse(text);
+            }
+            catch {
+                envelope = {};
+            }
+            throw new BrokerError(envelope.code || "broker_error", response.status, envelope.message || `The deploy broker answered ${response.status}.`, envelope.details || {}, retryAfterOf(response));
+        });
+    }
     return {
-        async get(key) {
-            return (0, retry_1.withRetry)(`Cloudflare KV GET "${key}"`, async () => {
-                const res = await doFetch(valueUrl(key), {
-                    headers: { authorization: `Bearer ${opts.apiToken}` },
-                });
-                if (res.status === 404) {
-                    // node-fetch does not auto-drain; leaving the body unread keeps the
-                    // socket pending and can delay process exit in a short-lived action.
-                    await res.text();
-                    return null;
-                }
-                if (!res.ok) {
-                    throw new CloudflareError(`Cloudflare KV GET "${key}" failed (${res.status}): ${truncate(await res.text())}`, res.status);
-                }
-                return res.text();
-            }, retryOpts);
-        },
-        async put(key, value) {
-            return (0, retry_1.withRetry)(`Cloudflare KV PUT "${key}"`, async () => {
-                const res = await doFetch(valueUrl(key), {
-                    method: "PUT",
-                    headers: {
-                        "content-type": "text/plain",
-                        authorization: `Bearer ${opts.apiToken}`,
-                    },
-                    body: value,
-                });
-                const text = await res.text();
-                // The values PUT endpoint returns a `{ success, errors, ... }` envelope.
-                let envelope;
-                try {
-                    envelope = JSON.parse(text);
-                }
-                catch {
-                    envelope = undefined;
-                }
-                if (!res.ok || (envelope && envelope.success === false)) {
-                    throw new CloudflareError(`Cloudflare KV PUT "${key}" failed (${res.status}): ${truncate(text)}`, res.status);
-                }
-            }, retryOpts);
-        },
+        requestCredentials: (body) => post("/credentials", body),
+        release: (body) => post("/release", body),
+        rollout: (body) => post("/rollout", body),
     };
 }
-/**
- * Parse a stored rollout value into something `patchRollouts` can merge.
- *
- * A missing key, a malformed value, or a stored `null` must not surface as a
- * context-free `SyntaxError` / `Cannot read properties of null` halfway through
- * a deploy — the message has to say which environment and key so an operator
- * can go fix it. Namespace ids are masked in the log, so the caller passes a
- * readable label rather than the id.
- */
-function parseRolloutValue(current, context) {
-    if (current === null || current.trim() === "")
-        return { records: {} };
-    let parsed;
-    try {
-        parsed = JSON.parse(current);
-    }
-    catch (e) {
-        throw new Error(`Cloudflare KV value for "${context.label}" is not valid JSON: ` +
-            `${e instanceof Error ? e.message : String(e)}`);
-    }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error(`Cloudflare KV value for "${context.label}" is not a rollout object.`);
-    }
-    const domain = parsed;
-    if (domain.records !== undefined &&
-        (typeof domain.records !== "object" || domain.records === null || Array.isArray(domain.records))) {
-        // An array is the dangerous shape: `patchRollouts` would assign a
-        // non-index property that JSON.stringify drops, so the write would look
-        // like it succeeded while silently discarding every rollout record.
-        throw new Error(`Cloudflare KV value for "${context.label}" has a \`records\` field that is not an ` +
-            "object.");
-    }
-    return domain.records ? domain : { ...domain, records: {} };
+function retryAfterOf(response) {
+    const raw = response.headers?.get("retry-after");
+    if (!raw)
+        return undefined;
+    const seconds = Number(raw);
+    return Number.isFinite(seconds) ? seconds : undefined;
 }
+
+
+/***/ }),
+
+/***/ 33029:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.createBrokeredCredentials = createBrokeredCredentials;
+const AWS = __importStar(__nccwpck_require__(62605));
+const core = __importStar(__nccwpck_require__(37484));
 /**
- * Read-modify-write of a rollout record. Replicates `webhooks-receiver`'s
- * `changeRollout`: read the current value (absent -> empty), merge the new
- * record with `patchRollouts` (NOT hand-rolled — preserves prepend order and
- * the murmurhash bucketing the worker relies on), and write it back.
+ * An aws-sdk v2 credentials object backed by the deploy broker.
  *
- * `patchRollouts` sorts the whole record array with `semver.compare`, so one
- * pre-existing non-semver version (a legacy or hand-edited entry) makes every
- * future patch throw. Its error names neither the key nor the namespace, so it
- * is re-thrown here with that context attached.
- */
-async function patchRolloutInKV(kv, params) {
-    const label = params.environment ? `${params.key}" in "${params.environment}` : params.key;
-    const current = await kv.get(params.key);
-    const currentValues = parseRolloutValue(current, { label });
-    let newValues;
-    try {
-        newValues = (0, rollouts_lib_1.patchRollouts)(currentValues, params.rolloutName, { percentage: params.percentage, prefix: params.prefix, version: params.version }, params.timestamp);
-    }
-    catch (e) {
-        throw new Error(`Could not merge the rollout into "${label}": ` +
-            `${e instanceof Error ? e.message : String(e)}. An existing record with a non-semver ` +
-            "version will do this — inspect the stored value.");
-    }
-    await kv.put(params.key, JSON.stringify(newValues));
-    return newValues;
-}
-/**
- * Patch the same rollout record into several environments (one namespace each),
- * sharing the account + token. Used to point multiple environments at one
- * version after a single S3 upload.
+ * The broker's session lasts 15 minutes — that is `AssumeRole`'s floor, not a policy
+ * choice — and a large site can take longer than that to upload. Refreshing beats failing:
+ * every part of a multipart upload is signed separately, so swapping the key mid-upload is
+ * transparent, whereas a hard "your upload exceeded 15 minutes" would make the action
+ * unusable for exactly the sites that need it most.
  *
- * Cloudflare KV has no cross-namespace transaction, so this attempts EVERY
- * environment and, if any fail, throws an aggregate error naming which
- * environments were already updated and which failed — so a partial write
- * (e.g. zone succeeded, today failed) is visible rather than hidden behind an
- * abort on the first failure. Returns the environments successfully written.
+ * v2 calls `get()` before signing every request. Concurrent refreshes are NOT coalesced by
+ * `get()` — that is opt-in, via `coalesceRefresh`, which queues the callbacks and invokes
+ * `load` once. So the work goes in `load` and `refresh` delegates; otherwise the uploader's
+ * concurrency of 10 would mint ten sessions instead of one.
  */
-async function patchRolloutInEnvironments(account, targets, params) {
-    const succeeded = [];
-    const failures = [];
-    for (const { environment, namespaceId } of targets) {
-        try {
-            const kv = createCloudflareKV({
-                accountId: account.accountId,
-                apiToken: account.apiToken,
-                namespaceId,
-                fetch: account.fetch,
-                sleep: account.sleep,
-                onRetry: account.onRetry,
-            });
-            await patchRolloutInKV(kv, { ...params, environment });
-            succeeded.push(environment);
-        }
-        catch (e) {
-            failures.push({ environment, error: e instanceof Error ? e.message : String(e) });
-        }
-    }
-    if (failures.length) {
-        const already = succeeded.length ? ` Already updated: ${succeeded.join(", ")}.` : "";
-        throw new Error(`KV update failed for: ${failures.map((f) => f.environment).join(", ")}.${already} ` +
-            `First error: ${failures[0].error}`);
-    }
-    return succeeded;
+function createBrokeredCredentials(opts) {
+    const credentials = new AWS.Credentials({ accessKeyId: "", secretAccessKey: "" });
+    // The default is 15 SECONDS. A 5 MB part on a slow runner, plus the SDK's own retries,
+    // can outlive that — and the request would then be signed with a key that expires while
+    // it is in flight.
+    //
+    // Cast because aws-sdk v2 declares `expiryWindow` only as a static, while `needsRefresh`
+    // reads `this.expiryWindow` off the instance (lib/credentials.js sets it per object).
+    // The gap is in the typings, not the behaviour.
+    credentials.expiryWindow = 120;
+    // `load` does the work and `refresh` routes through `coalesceRefresh`, which is what
+    // makes ten concurrent signers share one broker call. Both are `@api private` in the v2
+    // typings, hence the casts.
+    const internals = credentials;
+    internals.load = (callback) => {
+        opts
+            .fetchGrant()
+            .then((grant) => {
+            // Masked before anything else can log them.
+            core.setSecret(grant.secretAccessKey);
+            core.setSecret(grant.sessionToken);
+            credentials.accessKeyId = grant.accessKeyId;
+            credentials.secretAccessKey = grant.secretAccessKey;
+            credentials.sessionToken = grant.sessionToken;
+            credentials.expireTime = grant.expiration
+                ? new Date(grant.expiration)
+                : new Date(Date.now() + 900000);
+            opts.onRefresh?.(credentials.expireTime);
+            callback();
+        })
+            .catch((error) => callback(error));
+    };
+    internals.refresh = (callback) => internals.coalesceRefresh(callback);
+    // Forces the first `get()` to fetch rather than sign with the empty placeholder.
+    credentials.expired = true;
+    return credentials;
 }
 
 
@@ -81710,30 +78249,31 @@ const inputs_1 = __nccwpck_require__(38422);
 const version_1 = __nccwpck_require__(311);
 const plan_1 = __nccwpck_require__(22464);
 const s3_1 = __nccwpck_require__(72049);
-const cloudflare_1 = __nccwpck_require__(42316);
+const broker_1 = __nccwpck_require__(42494);
+const credentials_1 = __nccwpck_require__(33029);
 const slack_1 = __nccwpck_require__(16691);
 const github_1 = __nccwpck_require__(69248);
 async function run() {
     const inputs = (0, inputs_1.readInputs)();
     const { packageName } = inputs;
-    // commitVersion is reproducible from the commit (no run id), so a release run
-    // can locate the dev-deployed bytes. `commit` lets a manual deploy target a
-    // specific commit's build; otherwise it's the workflow's commit.
+    // commitVersion is reproducible from the commit (no run id), so a release run can locate
+    // the dev-deployed bytes. `commit` lets a manual deploy target a specific commit's build;
+    // otherwise it's the workflow's commit.
     const sha = inputs.commit || github.context.sha;
     const commitVersion = (0, version_1.computeVersion)({ baseVersion: inputs.baseVersion, sha });
     const targetVersion = inputs.version || commitVersion;
     const remoteFolder = `${packageName}/${targetVersion}`;
     const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${targetVersion}`;
-    const key = (0, inputs_1.kvKeyForTarget)(inputs.target);
     const envs = inputs.environments;
     core.setOutput("version", targetVersion);
     core.setOutput("s3-path", remoteFolder);
     core.setOutput("cdn-url", cdnUrl);
     core.info(`package:      ${packageName}`);
     core.info(`version:      ${targetVersion}${targetVersion === commitVersion ? " (commit)" : ""}`);
-    core.info(`kv key:       ${key}`);
-    core.info(`environments: ${envs.length ? envs.join(", ") : "(stage only — no KV)"}`);
+    core.info(`environments: ${envs.length ? envs.join(", ") : "(stage only — no rollout)"}`);
     core.info(`cdn url:      ${cdnUrl}`);
+    core.info(`broker:       ${inputs.brokerUrl}`);
+    const broker = (0, broker_1.createBrokerClient)({ baseUrl: inputs.brokerUrl, audience: inputs.oidcAudience });
     const observability = (0, github_1.createObservability)({
         enabled: inputs.createGithubDeployment,
         token: process.env.GITHUB_TOKEN,
@@ -81741,112 +78281,80 @@ async function run() {
         packageName,
         version: targetVersion,
         cdnUrl,
-        // Only the explicit override: passing the resolved sha unconditionally
-        // would shadow the PR-head fallback, since GITHUB_SHA is always set.
         sha: inputs.commit,
     });
     await observability.start();
-    // Distinct from "skip": the summary must not claim "already in S3, nothing
-    // to do" for a run that failed before the S3 step ran at all.
+    // Distinct from "skip": the summary must not claim "already in S3, nothing to do" for a
+    // run that failed before the S3 step ran at all.
     let s3Action = "not-attempted";
     try {
-        // 1) Ensure the target bytes are in S3 (state-aware).
-        //
-        // This runs on EVERY path, including a repoint that uploads nothing: the
-        // point of the check is that the KV must never be pointed at a prefix that
-        // isn't there. `resolveEnsurePlan` throws when the target is absent and
-        // there is nothing legitimate to fill it with.
         if (inputs.distPath && inputs.requireIndex && !(0, inputs_1.folderHasIndexHtml)(inputs.distPath)) {
             throw new Error(`No index.html found at the root of "${inputs.distPath}". The build looks empty or ` +
                 "misconfigured. Set `require-index: false` to deploy anyway.");
         }
-        const targetExists = await (0, s3_1.prefixExists)({
-            region: inputs.awsRegion,
-            bucket: inputs.s3Bucket,
-            prefix: remoteFolder,
-        });
-        const plan = (0, plan_1.resolveEnsurePlan)({
-            folderPresent: !!inputs.distPath,
-            sourceVersion: inputs.sourceVersion,
-            targetVersion,
-            commitVersion,
-            targetExists,
-            force: inputs.force,
-            copyFromCommit: inputs.copyFromCommit,
-        });
-        if (plan.s3 === "skip") {
-            core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
+        // A pure repoint writes nothing, so it needs no credentials — and asking for them would
+        // make a rollback depend on STS. Whether the bytes are really there is checked
+        // authoritatively by the broker before it touches the rollout record.
+        const needsWrite = !!(inputs.distPath ||
+            inputs.sourceVersion ||
+            inputs.copyFromCommit ||
+            inputs.force);
+        if (needsWrite) {
+            const grant = await broker.requestCredentials({ packageName, version: targetVersion });
+            const plan = (0, plan_1.resolveEnsurePlan)({
+                folderPresent: !!inputs.distPath,
+                sourceVersion: inputs.sourceVersion,
+                targetVersion,
+                commitVersion,
+                targetExists: grant.targetExists,
+                force: inputs.force,
+                copyFromCommit: inputs.copyFromCommit,
+            });
+            if (plan.s3 === "upload") {
+                await uploadToCdn(inputs, broker, { packageName, targetVersion, remoteFolder, sha, grant });
+                s3Action = "upload";
+            }
+            else if (plan.s3 === "copy") {
+                await copyRelease(broker, {
+                    packageName,
+                    targetVersion,
+                    sourceVersion: plan.source,
+                });
+                s3Action = "copy";
+            }
+            else {
+                core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
+                s3Action = "skip";
+            }
+        }
+        else {
+            core.info("> Repoint only — no S3 write.");
             s3Action = "skip";
         }
-        else if (plan.s3 === "copy") {
-            const sourceFolder = `${packageName}/${plan.source}`;
-            await core.group(`Copying s3://${inputs.s3Bucket}/${sourceFolder} -> ${remoteFolder}`, async () => {
-                const copied = await (0, s3_1.copyFolderInS3)({
-                    region: inputs.awsRegion,
-                    bucket: inputs.s3Bucket,
-                    sourceFolder,
-                    targetFolder: remoteFolder,
-                });
-                core.info(`Copied ${copied} objects.`);
-            });
-            s3Action = "copy";
-        }
-        else {
-            await core.group(`Uploading ${inputs.distPath} -> s3://${inputs.s3Bucket}/${remoteFolder}`, async () => {
-                const uploaded = await (0, s3_1.uploadFolderToS3)({
-                    region: inputs.awsRegion,
-                    bucket: inputs.s3Bucket,
-                    folder: inputs.distPath,
-                    remoteFolder,
-                });
-                // uploadDir resolves to [] for an empty folder rather than throwing;
-                // repointing the KV at nothing would take the site down.
-                if (uploaded.length === 0) {
-                    throw new Error(`Nothing was uploaded from "${inputs.distPath}" — the folder is empty. Check that ` +
-                        "the build ran and produced output.");
-                }
-                core.info(`Uploaded ${uploaded.length} objects.`);
-            });
-            s3Action = "upload";
-        }
-        // Set only now, so the value reports what the S3 step actually DID. Setting
-        // it from the plan meant a failed upload still reported `mode: upload`, and
-        // an `if: always()` step reading it would treat the bytes as live.
+        // Set only now, so the value reports what actually happened rather than what was
+        // planned: an `if: always()` step reading it after a later failure learns whether the
+        // bytes really landed.
         core.setOutput("mode", s3Action);
-        // 2) KV: repoint each environment, or stage (empty list -> no KV).
         if (envs.length === 0) {
-            core.info("> Stage only: bytes are in S3, KV left unchanged.");
+            core.info("> Stage only: bytes are in S3, no rollout requested.");
         }
         else {
-            await core.group(`Setting rollout "${inputs.deploymentName}" on "${key}" for ${envs.join(", ")}`, async () => {
-                await (0, cloudflare_1.patchRolloutInEnvironments)({
-                    accountId: inputs.cloudflareAccountId,
-                    apiToken: inputs.cloudflareApiToken,
-                    onRetry: (message) => core.warning(message),
-                }, inputs.kvTargets, {
-                    key,
-                    rolloutName: inputs.deploymentName,
-                    percentage: inputs.percentage,
-                    prefix: packageName,
-                    version: targetVersion,
-                    timestamp: Date.now(),
-                });
-                core.info(`Repointed ${envs.join(", ")} -> ${targetVersion} @ ${inputs.percentage}%`);
+            const results = await rolloutEnvironments(broker, inputs, {
+                packageName,
+                targetVersion,
+                envs,
             });
-            // 3) Slack (non-fatal), one message per repointed environment.
-            await notifyEnvironments(inputs, envs, targetVersion, packageName);
+            await notifyEnvironments(inputs, results, packageName, targetVersion);
         }
         await observability.succeed();
         core.info(`✅ ${s3Action} ${packageName}@${targetVersion}` +
-            (envs.length ? ` -> ${envs.join(", ")}` : " (staged, no KV)"));
+            (envs.length ? ` -> ${envs.join(", ")}` : " (staged, no rollout)"));
     }
     catch (e) {
         await observability.fail();
         throw e;
     }
     finally {
-        // Written even on failure: a half-applied deploy is exactly when someone
-        // needs to see what the S3 step did.
         await writeSummary({
             s3Action,
             packageName,
@@ -81857,24 +78365,150 @@ async function run() {
         });
     }
 }
+async function uploadToCdn(inputs, broker, ctx) {
+    const { grant, remoteFolder } = ctx;
+    // Self-refreshing: the broker's session is 15 minutes, which is AssumeRole's floor, and
+    // a large site can outlast it. Every part of a multipart upload is signed separately, so
+    // swapping the key mid-upload is transparent.
+    const credentials = (0, credentials_1.createBrokeredCredentials)({
+        fetchGrant: async () => (await broker.requestCredentials({
+            packageName: ctx.packageName,
+            version: ctx.targetVersion,
+        })).credentials,
+        onRefresh: (expiresAt) => core.debug(`deploy credentials refreshed, valid until ${expiresAt?.toISOString()}`),
+    });
+    await core.group(`Uploading ${inputs.distPath} -> s3://${grant.bucket}/${remoteFolder}`, async () => {
+        const uploaded = await (0, s3_1.uploadFolderToS3)({
+            region: grant.region,
+            bucket: grant.bucket,
+            folder: inputs.distPath,
+            remoteFolder,
+            credentials,
+        });
+        // uploadDir resolves to [] for an empty folder rather than throwing; rolling out an
+        // empty prefix would take the site down.
+        if (uploaded.length === 0) {
+            throw new Error(`Nothing was uploaded from "${inputs.distPath}" — the folder is empty. Check that the ` +
+                "build ran and produced output.");
+        }
+        core.info(`Uploaded ${uploaded.length} objects.`);
+        // Written last, deliberately. Its presence is what makes the prefix eligible for a
+        // rollout, so a crashed upload leaves a prefix the broker will refuse to publish.
+        await (0, s3_1.writeCompletionMarker)({
+            region: grant.region,
+            bucket: grant.bucket,
+            remoteFolder,
+            credentials,
+            marker: {
+                package: ctx.packageName,
+                version: ctx.targetVersion,
+                commit: ctx.sha,
+                objectCount: uploaded.length,
+                kind: "upload",
+                completedAt: new Date().toISOString(),
+                runId: process.env.GITHUB_RUN_ID,
+            },
+        });
+        core.info("Wrote the completion marker.");
+    });
+}
+/**
+ * Drives the broker's resumable copy to completion.
+ *
+ * No AWS credentials are involved: the copy happens inside S3, issued by the broker. The
+ * loop exists because API Gateway caps a single call at 29 seconds and a site can be a few
+ * thousand objects once the compressed variants are counted.
+ */
+async function copyRelease(broker, ctx) {
+    await core.group(`Releasing ${ctx.sourceVersion} -> ${ctx.targetVersion}`, async () => {
+        let continuation;
+        for (;;) {
+            let progress;
+            try {
+                progress = await broker.release({
+                    packageName: ctx.packageName,
+                    version: ctx.targetVersion,
+                    sourceVersion: ctx.sourceVersion,
+                    continuation,
+                });
+            }
+            catch (e) {
+                // A release routinely races the commit build that produced its source, so this is
+                // a wait rather than a failure.
+                if (e instanceof broker_1.BrokerError && e.code === "source_not_ready") {
+                    const waitSeconds = e.retryAfterSeconds ?? 10;
+                    core.info(`Source build not finished yet; waiting ${waitSeconds}s.`);
+                    await sleep(waitSeconds * 1000);
+                    continue;
+                }
+                throw e;
+            }
+            if (progress.complete) {
+                core.info(`Copied ${progress.objectCount ?? progress.copied} objects.`);
+                return;
+            }
+            core.info(`Copied ${progress.copied} objects so far, continuing…`);
+            continuation = progress.continuation;
+        }
+    });
+}
+/**
+ * One call per environment.
+ *
+ * Attempts every one and aggregates the failures rather than stopping at the first:
+ * Cloudflare KV has no cross-namespace transaction, so a partial rollout is possible and
+ * needs to be visible rather than hidden behind an abort.
+ */
+async function rolloutEnvironments(broker, inputs, ctx) {
+    const succeeded = [];
+    const failures = [];
+    await core.group(`Rolling out ${ctx.targetVersion} to ${ctx.envs.join(", ")}`, async () => {
+        for (const environment of ctx.envs) {
+            try {
+                const result = await broker.rollout({
+                    packageName: ctx.packageName,
+                    version: ctx.targetVersion,
+                    environment,
+                    percentage: inputs.percentage,
+                    rolloutName: inputs.deploymentName,
+                });
+                succeeded.push(result);
+                core.info(`${environment}: ${result.key} -> ${ctx.targetVersion} @ ${inputs.percentage}%`);
+            }
+            catch (e) {
+                failures.push({ environment, error: describe(e) });
+            }
+        }
+    });
+    if (failures.length) {
+        const already = succeeded.length
+            ? ` Already updated: ${succeeded.map((r) => r.environment).join(", ")}.`
+            : "";
+        throw new Error(`Rollout failed for: ${failures.map((f) => f.environment).join(", ")}.${already} ` +
+            `First error: ${failures[0].error}`);
+    }
+    return succeeded;
+}
 /** Slack is observability, never a reason to fail a deploy that already landed. */
-async function notifyEnvironments(inputs, envs, version, packageName) {
+async function notifyEnvironments(inputs, results, packageName, version) {
     if (!inputs.slackWebhook)
         return;
-    for (const env of envs) {
+    for (const result of results) {
         try {
             await (0, slack_1.notifyRollout)({
                 webhookUrl: inputs.slackWebhook,
-                url: (0, inputs_1.rolloutUrlForTarget)(inputs.target, env),
-                rolloutName: inputs.deploymentName,
-                percentage: inputs.percentage,
+                // The broker returns the human-facing URL, since it is the thing that knows which
+                // key the rollout landed on.
+                url: result.url,
+                rolloutName: result.rolloutName,
+                percentage: result.percentage,
                 prefix: packageName,
                 version,
                 onRetry: (message) => core.warning(message),
             });
         }
         catch (e) {
-            core.warning(`Slack notification failed: ${e instanceof Error ? e.message : String(e)}`);
+            core.warning(`Slack notification failed: ${describe(e)}`);
         }
     }
 }
@@ -81885,7 +78519,7 @@ async function writeSummary(s) {
             ["S3", s.s3Action],
             ["Package", s.packageName],
             ["Version", s.version],
-            ["Environments", s.environments.length ? s.environments.join(", ") : "(staged — no KV)"],
+            ["Environments", s.environments.length ? s.environments.join(", ") : "(staged — no rollout)"],
             ["Rollout", `${s.percentage}%`],
             ["CDN URL", s.cdnUrl],
         ];
@@ -81901,16 +78535,25 @@ async function writeSummary(s) {
             .write();
     }
     catch (e) {
-        core.warning(`Could not write job summary: ${e instanceof Error ? e.message : String(e)}`);
+        core.warning(`Could not write job summary: ${describe(e)}`);
     }
 }
+function describe(e) {
+    // The broker's code is its stable contract and names the thing to fix, so it leads.
+    if (e instanceof broker_1.BrokerError)
+        return `[${e.code}] ${e.message}`;
+    return e instanceof Error ? e.message : String(e);
+}
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 /**
- * Turn a thrown error into a failed job. Exported so the suite can pin it: it
- * is the only thing that makes a broken deploy show up red, and a top-level
- * `.catch` body is otherwise unreachable from a test.
+ * Turns a thrown error into a failed job. Exported so the suite can pin it: it is the only
+ * thing that makes a broken deploy show up red, and a top-level `.catch` body is otherwise
+ * unreachable from a test.
  */
 function reportFailure(e) {
-    core.setFailed(e instanceof Error ? e.message : String(e));
+    core.setFailed(describe(e));
 }
 run().catch(reportFailure);
 
@@ -81956,18 +78599,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DEFAULT_ENVIRONMENTS = exports.DEFAULT_ROLLOUT_NAME = exports.DEFAULT_CDN_BASE_URL = exports.DEFAULT_BUCKET = exports.ENVIRONMENTS = void 0;
+exports.DEFAULT_ENVIRONMENTS = exports.DEFAULT_ROLLOUT_NAME = exports.DEFAULT_CDN_BASE_URL = exports.ENVIRONMENTS = void 0;
 exports.isEnvironment = isEnvironment;
 exports.parseBooleanInput = parseBooleanInput;
-exports.deriveDeploymentPath = deriveDeploymentPath;
 exports.validatePackageName = validatePackageName;
-exports.resolveTarget = resolveTarget;
 exports.parseEnvironments = parseEnvironments;
-exports.resolveNamespace = resolveNamespace;
-exports.resolveKvTargets = resolveKvTargets;
 exports.parsePercentage = parsePercentage;
-exports.kvKeyForTarget = kvKeyForTarget;
-exports.rolloutUrlForTarget = rolloutUrlForTarget;
 exports.folderHasIndexHtml = folderHasIndexHtml;
 exports.readPackageJson = readPackageJson;
 exports.validateDistPath = validateDistPath;
@@ -81975,8 +78612,8 @@ exports.readInputs = readInputs;
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
 const core = __importStar(__nccwpck_require__(37484));
+const types_1 = __nccwpck_require__(38522);
 exports.ENVIRONMENTS = ["zone", "today", "org"];
-exports.DEFAULT_BUCKET = "cdn-decentraland-org-contentbucket-371d0b7";
 exports.DEFAULT_CDN_BASE_URL = "https://cdn.decentraland.org";
 exports.DEFAULT_ROLLOUT_NAME = "_site";
 exports.DEFAULT_ENVIRONMENTS = ["zone", "today"];
@@ -82011,10 +78648,6 @@ function parseBooleanInput(raw, fallback, name) {
         return false;
     throw new Error(`Invalid value "${raw}" for \`${name}\`. Expected true or false.`);
 }
-/** `@dcl/auth-site` -> `auth`, `@dcl/sites` -> `sites`. */
-function deriveDeploymentPath(packageName) {
-    return packageName.replace(/^@[^/]+\//, "").replace(/-site$/, "");
-}
 /**
  * The package name doubles as the S3 key root and the KV record prefix, so it
  * decides which site's content a run can overwrite. It comes from the
@@ -82033,15 +78666,6 @@ function validatePackageName(packageName) {
             "root and the Cloudflare KV prefix.");
     }
     return packageName;
-}
-/** The KV key: explicit `domain`, explicit `deployment-path`, or derived from the package name. */
-function resolveTarget(opts) {
-    if (opts.domain && opts.path) {
-        throw new Error("Provide either `deployment-path` or `domain`, not both");
-    }
-    if (opts.domain)
-        return { kind: "domain", domain: opts.domain };
-    return { kind: "path", path: opts.path || deriveDeploymentPath(opts.packageName) };
 }
 /** Parse the environments input — JSON array (`["zone","today"]`) or comma list. Empty string -> []. */
 function parseEnvironments(raw) {
@@ -82078,32 +78702,6 @@ function parseEnvironments(raw) {
     }
     return environments;
 }
-/** Pick the namespace id for an environment: explicit override > per-env input. */
-function resolveNamespace(environment, map, override) {
-    const ns = override || map[environment];
-    if (!ns) {
-        throw new Error(`No Cloudflare namespace id for environment "${environment}". ` +
-            `Set the org secret CF_NS_${environment.toUpperCase()} (or cloudflare-namespace-${environment}).`);
-    }
-    return ns;
-}
-function resolveKvTargets(environments, map, override) {
-    const targets = environments.map((environment) => ({
-        environment,
-        namespaceId: resolveNamespace(environment, map, override),
-    }));
-    // Several environments can legitimately share one namespace (a single-account
-    // test setup, or an explicit `cloudflare-namespace-id`). Writing the same
-    // record to the same namespace twice is idempotent but pointless, so collapse
-    // the duplicates and keep the first environment's name for reporting.
-    const seen = new Set();
-    return targets.filter((target) => {
-        if (seen.has(target.namespaceId))
-            return false;
-        seen.add(target.namespaceId);
-        return true;
-    });
-}
 function parsePercentage(raw) {
     const pct = raw === "" ? 100 : Number(raw);
     // Rollout percentages are integers; a fractional value would be silently
@@ -82112,16 +78710,6 @@ function parsePercentage(raw) {
         throw new Error(`Invalid percentage "${raw}". Expected an integer between 0 and 100.`);
     }
     return pct;
-}
-/** The KV key for a target: the path or the domain (environment picks namespace). */
-function kvKeyForTarget(target) {
-    return target.kind === "domain" ? target.domain : target.path;
-}
-/** Human-facing URL for the Slack notification, mirroring `changeRollout`. */
-function rolloutUrlForTarget(target, environment) {
-    return target.kind === "domain"
-        ? `https://${target.domain}`
-        : `https://decentraland.${environment}/${target.path}`;
 }
 /** True when the folder has an `index.html` at its root. */
 function folderHasIndexHtml(folder) {
@@ -82204,11 +78792,6 @@ function readInputs() {
             "the repository out in the deploy job, or set the `base-version` input. (This used to " +
             "fall back to 0.0.0, which produced a version nobody serves.)");
     }
-    const target = resolveTarget({
-        path: core.getInput("deployment-path") || undefined,
-        domain: core.getInput("domain") || undefined,
-        packageName,
-    });
     // environments: explicit plural > singular sugar > default [zone, today].
     const envPlural = core.getInput("deployment-environments");
     const envSingular = core.getInput("deployment-environment");
@@ -82222,16 +78805,6 @@ function readInputs() {
         environments = [asEnvironment(envSingular)];
     else
         environments = exports.DEFAULT_ENVIRONMENTS;
-    const namespaceOverride = core.getInput("cloudflare-namespace-id") || undefined;
-    const kvTargets = resolveKvTargets(environments, {
-        zone: core.getInput("cloudflare-namespace-zone") || undefined,
-        today: core.getInput("cloudflare-namespace-today") || undefined,
-        org: core.getInput("cloudflare-namespace-org") || undefined,
-    }, namespaceOverride);
-    // Namespace ids are org secrets. Mask them so they can't reach a log through
-    // an error message even when a caller passes them from a `vars.*`.
-    for (const { namespaceId } of kvTargets)
-        core.setSecret(namespaceId);
     const version = core.getInput("version") || undefined;
     const sourceVersion = core.getInput("source-version") || undefined;
     if (distPath && sourceVersion) {
@@ -82242,13 +78815,6 @@ function readInputs() {
         throw new Error(`\`version\` and \`source-version\` are both "${version}" — a version cannot be copied ` +
             "onto itself.");
     }
-    // Cloudflare credentials are only needed when something is actually repointed;
-    // a stage-only run (`deployment-environments: '[]'`) never calls Cloudflare.
-    const needsCloudflare = environments.length > 0;
-    const cloudflareAccountId = core.getInput("cloudflare-account-id", { required: needsCloudflare });
-    const cloudflareApiToken = core.getInput("cloudflare-api-token", { required: needsCloudflare });
-    if (cloudflareApiToken)
-        core.setSecret(cloudflareApiToken);
     const slackWebhook = core.getInput("slack-webhook") || undefined;
     if (slackWebhook)
         core.setSecret(slackWebhook);
@@ -82256,9 +78822,7 @@ function readInputs() {
         distPath,
         packageName,
         baseVersion,
-        target,
         environments,
-        kvTargets,
         deploymentName: core.getInput("deployment-name") || exports.DEFAULT_ROLLOUT_NAME,
         percentage: parsePercentage(core.getInput("percentage")),
         version,
@@ -82267,13 +78831,11 @@ function readInputs() {
         requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
         force: parseBooleanInput(core.getInput("force"), false, "force"),
         copyFromCommit: parseBooleanInput(core.getInput("copy-from-commit"), false, "copy-from-commit"),
-        awsRegion: core.getInput("aws-region") || "us-east-1",
-        s3Bucket: core.getInput("s3-bucket") || exports.DEFAULT_BUCKET,
-        cloudflareAccountId,
-        cloudflareApiToken,
         slackWebhook,
         createGithubDeployment: parseBooleanInput(core.getInput("create-github-deployment"), true, "create-github-deployment"),
         cdnBaseUrl: core.getInput("cdn-base-url") || exports.DEFAULT_CDN_BASE_URL,
+        brokerUrl: core.getInput("broker-url") || types_1.DEFAULT_BROKER_URL,
+        oidcAudience: core.getInput("oidc-audience") || types_1.DEFAULT_OIDC_AUDIENCE,
     };
 }
 
@@ -82444,106 +79006,49 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.uploadFolderToS3 = uploadFolderToS3;
-exports.prefixExists = prefixExists;
-exports.copyFolderInS3 = copyFolderInS3;
+exports.writeCompletionMarker = writeCompletionMarker;
 const AWS = __importStar(__nccwpck_require__(62605));
 const cdn_uploader_1 = __nccwpck_require__(71189);
+const types_1 = __nccwpck_require__(38522);
 /**
- * Upload a built folder to the CDN bucket under `<remoteFolder>` using
- * `@dcl/cdn-uploader`'s `uploadDir` with the same `{ immutable, concurrency }`
- * config as `static-sites-pipeline`.
+ * Upload a built folder to the CDN bucket, with credentials the broker minted for exactly
+ * this version prefix.
  *
- * The `AWS.S3` client is constructed with NO explicit credentials on purpose:
- * the aws-sdk v2 default credential provider chain reads the env vars set by
- * `aws-actions/configure-aws-credentials` (`AWS_ACCESS_KEY_ID`,
- * `AWS_SECRET_ACCESS_KEY` and crucially `AWS_SESSION_TOKEN` for OIDC temp
- * creds). Passing partial explicit creds would bypass the session token.
+ * The client is constructed with an explicit credentials object rather than letting the
+ * v2 default chain find ambient `AWS_*` variables. There is no longer an assume-role step
+ * populating those, and falling back to whatever the runner happens to have would be a
+ * silent path to a wider credential than the broker granted.
  *
- * Returns the uploaded object keys. Note these are OBJECTS, not source files:
- * the uploader writes up to three per compressible file (`f`, `f.gzip`, `f.br`).
+ * Returns the uploaded object keys — objects, not source files: the uploader writes up to
+ * three per compressible file (`f`, `f.gzip`, `f.br`).
  */
 async function uploadFolderToS3(opts) {
-    const s3 = opts.s3 || new AWS.S3({ region: opts.region });
+    const s3 = opts.s3 || new AWS.S3({ region: opts.region, credentials: opts.credentials });
     return (0, cdn_uploader_1.uploadDir)(s3, opts.bucket, opts.folder, opts.remoteFolder, {
         immutable: true,
         concurrency: 10,
     });
 }
-/** Strip trailing slashes and append a single one. */
-function asPrefix(folder) {
-    return folder.replace(/\/+$/, "") + "/";
-}
 /**
- * Is anything stored under this prefix? This is the "is this version already
- * deployed?" signal.
+ * Write the completion marker, last.
  *
- * A prefix listing rather than a HEAD on `<dir>/index.html` on purpose:
- * `require-index: false` deploys (non-HTML asset bundles) have no index.html,
- * so a HEAD probe could never report them as present — they would re-upload on
- * every run and, worse, every by-version repoint would look like an empty
- * target. `listObjectsV2` also answers honestly for a caller that lacks
- * `s3:GetObject` on a missing key, where S3 returns 403 rather than 404 to a
- * HEAD. It needs `s3:ListBucket`, which the copy path already requires.
+ * This is what makes the prefix eligible for a rollout. The broker refuses to publish a
+ * version without it, which is what stops a crashed or cancelled upload being served: any
+ * "does an object exist?" check answers true as soon as the first file lands.
  */
-async function prefixExists(opts) {
-    const s3 = opts.s3 || new AWS.S3({ region: opts.region });
-    const listed = await s3
-        .listObjectsV2({ Bucket: opts.bucket, Prefix: asPrefix(opts.prefix), MaxKeys: 1 })
+async function writeCompletionMarker(opts) {
+    const s3 = opts.s3 || new AWS.S3({ region: opts.region, credentials: opts.credentials });
+    await s3
+        .putObject({
+        Bucket: opts.bucket,
+        Key: `${opts.remoteFolder}/${types_1.COMPLETION_MARKER_FILENAME}`,
+        Body: JSON.stringify(opts.marker),
+        ContentType: "application/json",
+        // Matches every other object the uploader writes into this public CDN prefix.
+        ACL: "public-read",
+        CacheControl: "no-cache",
+    })
         .promise();
-    return (listed.KeyCount || 0) > 0;
-}
-/**
- * Server-side copy of every object under `sourceFolder/` to `targetFolder/`
- * within the same bucket — the no-rebuild redeploy.
- *
- * `@dcl/cdn-uploader` writes each compressible file as separate objects
- * (`file`, `file.gzip`, `file.br`) with `public-read` ACL and per-object
- * content metadata. Copying every object under the prefix with
- * `MetadataDirective: "COPY"` (preserves ContentType / ContentEncoding /
- * CacheControl / ContentDisposition) and `ACL: "public-read"` (copies do NOT
- * carry the source ACL) reproduces exactly what a fresh upload would serve.
- */
-async function copyFolderInS3(opts) {
-    const s3 = opts.s3 || new AWS.S3({ region: opts.region });
-    const srcPrefix = asPrefix(opts.sourceFolder);
-    const dstPrefix = asPrefix(opts.targetFolder);
-    const concurrency = opts.concurrency || 16;
-    let continuationToken;
-    let copied = 0;
-    do {
-        const listed = await s3
-            .listObjectsV2({
-            Bucket: opts.bucket,
-            Prefix: srcPrefix,
-            ContinuationToken: continuationToken,
-        })
-            .promise();
-        const keys = (listed.Contents || []).map((o) => o.Key).filter((k) => !!k);
-        for (let i = 0; i < keys.length; i += concurrency) {
-            const batch = keys.slice(i, i + concurrency);
-            await Promise.all(batch.map((sourceKey) => {
-                const targetKey = dstPrefix + sourceKey.slice(srcPrefix.length);
-                // CopySource must be `/<bucket>/<key>` with each path segment encoded
-                // (encodeURIComponent on the whole key would clobber the slashes).
-                const copySource = `/${opts.bucket}/${sourceKey.split("/").map(encodeURIComponent).join("/")}`;
-                return s3
-                    .copyObject({
-                    Bucket: opts.bucket,
-                    CopySource: copySource,
-                    Key: targetKey,
-                    MetadataDirective: "COPY",
-                    ACL: "public-read",
-                })
-                    .promise();
-            }));
-            copied += batch.length;
-        }
-        continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
-    } while (continuationToken);
-    if (copied === 0) {
-        throw new Error(`No objects found under s3://${opts.bucket}/${srcPrefix} to copy.`);
-    }
-    return copied;
 }
 
 
@@ -82616,6 +79121,23 @@ async function notifyRollout(opts) {
         }
     }, { sleep: opts.sleep, onRetry: opts.onRetry });
 }
+
+
+/***/ }),
+
+/***/ 38522:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DEFAULT_OIDC_AUDIENCE = exports.DEFAULT_BROKER_URL = exports.COMPLETION_MARKER_FILENAME = void 0;
+/** Written last by an upload; the broker refuses to roll out a prefix without it. */
+exports.COMPLETION_MARKER_FILENAME = ".deploy-complete.json";
+/** The broker's endpoint. One deployment serves every rollout environment. */
+exports.DEFAULT_BROKER_URL = "https://cdn-deploy.decentraland.org";
+/** The audience the broker expects on the OIDC token. */
+exports.DEFAULT_OIDC_AUDIENCE = "dcl-cdn-deploy";
 
 
 /***/ }),
