@@ -131,7 +131,9 @@ Behaviour is otherwise unchanged: same `dcl/container-deployment` task, same pay
 
 # cdn-deploy
 
-Deploys a pre-built static site to the Decentraland CDN in one step: uploads the folder to S3 over GitHub OIDC, then patches the Cloudflare KV rollout record the CDN worker reads to pick a version. Replaces the `oddish-action` → `static-sites-pipeline` → `set-rollout-action` → `webhooks-receiver` relay.
+Deploys a pre-built static site to the Decentraland CDN in one step: uploads the folder to S3, then patches the Cloudflare KV rollout record the CDN worker reads to pick a version. Replaces the `oddish-action` → `static-sites-pipeline` → `set-rollout-action` → `webhooks-receiver` relay.
+
+A site repository holds **no Cloudflare token and no IAM role**. The action authenticates to the cdn-deploy broker with a GitHub OIDC token; the broker checks the repository owns the package in [`decentraland/definitions`](https://github.com/decentraland/definitions) before minting S3 credentials scoped to one version prefix, or writing the rollout.
 
 ```yaml
 - uses: actions/checkout@v4
@@ -140,30 +142,24 @@ Deploys a pre-built static site to the Decentraland CDN in one step: uploads the
   with:
     dist-path: ./dist
     deployment-environments: '["zone","today"]'
-    aws-role-to-assume: ${{ vars.CDN_DEPLOY_ROLE_ARN }}
-    cloudflare-account-id: ${{ vars.CF_ACCOUNT_ID }}
-    cloudflare-api-token: ${{ secrets.CF_KV_API_TOKEN }}
-    cloudflare-namespace-zone: ${{ secrets.CF_NS_ZONE }}
-    cloudflare-namespace-today: ${{ secrets.CF_NS_TODAY }}
 ```
 
 Unlike the rest of this repository, which is consumed from `@main`, `cdn-deploy` is consumed from the pinned major tag `@cdn-deploy-v1`: it runs from a committed bundle, and the release workflow only moves that tag onto a commit whose bundle matches its sources.
 
-The calling job needs `permissions: { id-token: write, contents: read, deployments: write, statuses: write }` — `id-token` for the AWS OIDC assume-role, `deployments` and `statuses` only while `create-github-deployment` is on. Give it a `concurrency` group too, so one deploy runs at a time per repository; the KV update is read-modify-write.
+The calling job needs `permissions: { id-token: write, contents: read, deployments: write, statuses: write }` — `id-token` to mint the OIDC token the broker authenticates, `deployments` and `statuses` only while `create-github-deployment` is on. Give it a `concurrency` group too, so one deploy runs at a time per repository; the KV update is read-modify-write.
 
 ## Inputs
 
 Most inputs are defaulted from the checked-out `package.json`. The ones a caller normally sets:
 
-| Input                                           | Required                 | Description                                                                                                                     |
-| ----------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `dist-path`                                     | For an upload            | Pre-built directory to upload, e.g. `./dist`. Omit for a release copy or a repoint                                              |
-| `aws-role-to-assume`                            | Yes                      | IAM role ARN assumed via OIDC. Needed on every flow — each one reads S3 to check whether the target version is already deployed |
-| `cloudflare-account-id`                         | Unless stage-only        | Cloudflare account id for the KV REST API                                                                                       |
-| `cloudflare-api-token`                          | Unless stage-only        | Token scoped to Workers KV Storage: Edit on the rollout namespaces                                                              |
-| `cloudflare-namespace-zone` / `-today` / `-org` | Per targeted environment | KV namespace id for that environment, from the org secrets `CF_NS_ZONE` / `CF_NS_TODAY` / `CF_NS_ORG`                           |
-| `deployment-environments`                       | No                       | Environments to repoint, `zone,today` by default. `'[]'` stages the bytes in S3 without touching any KV                         |
-| `version`                                       | No                       | Target version. Defaults to `<package.json version>-commit-<shortSha>`                                                          |
+| Input                     | Required      | Description                                                                                             |
+| ------------------------- | ------------- | ------------------------------------------------------------------------------------------------------- |
+| `dist-path`               | For an upload | Pre-built directory to upload, e.g. `./dist`. Omit for a release copy or a repoint                      |
+| `deployment-environments` | No            | Environments to repoint, `zone,today` by default. `'[]'` stages the bytes in S3 without rolling out     |
+| `version`                 | No            | Target version. Defaults to `<package.json version>-commit-<shortSha>`                                  |
+| `copy-from-commit`        | No            | Release flow: fill the target version by copying this commit's build. Off by default                    |
+| `slack-webhook`           | No            | The only secret a site repository still passes, and it is optional                                      |
+| `broker-url`              | No            | Overrides the broker endpoint. Defaults to the production one                                           |
 
 | Output    | Description                                                    |
 | --------- | -------------------------------------------------------------- |
