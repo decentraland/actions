@@ -56,7 +56,14 @@ describe("when uploading a folder to S3", () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
-      { immutable: true, concurrency: 10 },
+      // dryRun and skipRepeated are pinned too: uploadDir honours them, and a site
+      // setting either uploads nothing while the run still looks successful.
+      expect.objectContaining({
+        immutable: true,
+        concurrency: 10,
+        dryRun: false,
+        skipRepeated: false,
+      }),
     );
   });
 

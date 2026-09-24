@@ -78328,7 +78328,16 @@ async function run() {
             catch (e) {
                 if (!(e instanceof broker_1.BrokerError) || e.code !== "version_already_published")
                     throw e;
-                core.info(`> ${remoteFolder} is already published — skipping the S3 write.`);
+                // `force` means "write these bytes anyway", and a published version cannot be
+                // written at all — so honouring the skip here would report success for a run that
+                // did the opposite of what was asked.
+                if (inputs.force) {
+                    throw new Error(`\`force\` was set, but ${packageName}@${targetVersion} is already published and its ` +
+                        "bytes are immutable — they may be what production is serving. Deploy a new version " +
+                        "instead of replacing a released one.");
+                }
+                core.info(`> ${remoteFolder} is already published — skipping the S3 write. What the CDN serves ` +
+                    "for this version is what was published before, not what this run built.");
                 grant = undefined;
             }
             if (!grant) {
@@ -78852,7 +78861,58 @@ function validateDistPath(distPath, workspace = process.env.GITHUB_WORKSPACE || 
         throw new Error(`dist-path "${distPath}" contains a .git directory, which would be published to a public ` +
             "CDN bucket. Point it at the build output directory.");
     }
+    assertNoEscapingSymlinks(real, distPath);
     return distPath;
+}
+/**
+ * Refuse a symlink inside the build folder that points outside it.
+ *
+ * Checking the root is not enough. The uploader globs `**\/*` with `dot: true` and glob
+ * follows symlinked directories, so a single `dist/assets -> ../.git` publishes the
+ * repository's git config — which on a runner carries the `AUTHORIZATION: basic <token>`
+ * header `actions/checkout` writes — to a public bucket, at a guessable URL, cached
+ * immutable for a year. The same trick reaches `~/.aws`, `~/.npmrc` and the runner's
+ * workflow temp directory.
+ *
+ * This does not need a hostile workflow author: any build step, or a dependency's
+ * postinstall, can drop one into `dist`.
+ *
+ * Symlinks that stay inside the folder are fine — they resolve to content that was going
+ * to be published anyway.
+ */
+function assertNoEscapingSymlinks(root, distPath) {
+    const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const full = path.join(dir, entry.name);
+            if (entry.isSymbolicLink()) {
+                // realpath, not readlink: a relative link, and a chain of links, both have to be
+                // resolved before the containment test means anything.
+                let target;
+                try {
+                    target = fs.realpathSync(full);
+                }
+                catch {
+                    // Dangling: it publishes nothing, and the uploader skips it.
+                    continue;
+                }
+                const relative = path.relative(root, target);
+                if (relative === ".." ||
+                    relative.split(path.sep)[0] === ".." ||
+                    path.isAbsolute(relative)) {
+                    throw new Error(`dist-path "${distPath}" contains a symlink that points outside it: ` +
+                        `${path.relative(root, full)} -> ${target}. The uploader follows symlinks and ` +
+                        "writes every object public-read, so this would publish files from outside the " +
+                        "build to a public CDN. Remove it, or point dist-path at a clean build folder.");
+                }
+                // Inside the folder, so its contents are already in scope. Not followed, to avoid
+                // a cycle.
+                continue;
+            }
+            if (entry.isDirectory())
+                walk(full);
+        }
+    };
+    walk(root);
 }
 /** Read and validate all action inputs from the environment via @actions/core. */
 function readInputs() {
@@ -79123,6 +79183,35 @@ async function uploadFolderToS3(opts) {
 /** The per-site upload rules file, read from the root of the built folder. */
 const CONFIG_FILE = "config.yml";
 /**
+ * Refuse a config that parses but says nothing.
+ *
+ * `readConfiguration` returns whatever the YAML happened to be, and the uploader only acts
+ * on `matches` when it is an array — so `mathces:`, a string, or a top-level list all
+ * produce a config with no rules at all. That is the dangerous shape: a site using
+ * `ignore:` to keep files out of a public bucket loses the protection to a one-letter
+ * typo, silently. Being fatal here is the whole point of reading the file.
+ */
+function assertUsableConfig(parsed, configPath) {
+    const bad = (why) => {
+        throw new Error(`"${configPath}" ${why}. It must be a mapping with a \`matches\` list of rules — as written ` +
+            "the uploader would apply none of them, publishing files an `ignore` rule excludes.");
+    };
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+        bad("is not a mapping");
+    const matches = parsed.matches;
+    if (matches === undefined)
+        bad("has no `matches` list");
+    if (!Array.isArray(matches))
+        bad("has a `matches` that is not a list");
+    for (const rule of matches) {
+        if (rule === null ||
+            typeof rule !== "object" ||
+            typeof rule.match !== "string") {
+            bad("has a rule without a string `match`");
+        }
+    }
+}
+/**
  * Per-file upload rules, merged the way static-sites-pipeline merges them.
  *
  * A site can ship a `config.yml` at the root of its build declaring `contentType`,
@@ -79135,14 +79224,13 @@ const CONFIG_FILE = "config.yml";
  * the same precedence the pipeline uses.
  */
 function readUploadConfig(folder) {
-    const defaults = { immutable: true, concurrency: 10 };
+    const defaults = { immutable: true, concurrency: 10, dryRun: false, skipRepeated: false };
     const configPath = path.join(folder, CONFIG_FILE);
     if (!fs.existsSync(configPath))
         return defaults;
+    let parsed;
     try {
-        const config = { ...(0, utils_1.readConfiguration)(configPath), ...defaults };
-        core.info(`Using the upload rules from ${CONFIG_FILE}.`);
-        return config;
+        parsed = (0, utils_1.readConfiguration)(configPath);
     }
     catch (e) {
         // Deliberately fatal, unlike the pipeline, which falls back to the defaults and logs.
@@ -79150,6 +79238,16 @@ function readUploadConfig(folder) {
         throw new Error(`Could not read "${configPath}": ${e instanceof Error ? e.message : String(e)}. ` +
             "Fix the file or remove it — deploying without its rules would upload files it excludes " +
             "and strip the content types it sets.");
+    }
+    assertUsableConfig(parsed, configPath);
+    {
+        // dryRun, skipRepeated and variants are pinned alongside immutable and concurrency:
+        // uploadDir honours all five, and a site setting dryRun or an empty variants list
+        // uploads nothing while the run still reports success up to the "folder is empty"
+        // check, which then blames the build.
+        const config = { ...parsed, ...defaults };
+        core.info(`Using the upload rules from ${CONFIG_FILE}.`);
+        return config;
     }
 }
 /**
