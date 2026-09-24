@@ -2,7 +2,7 @@ import * as core from "@actions/core";
 import { BrokerError, createBrokerClient } from "../src/broker";
 import { createBrokeredCredentials } from "../src/credentials";
 import { createObservability } from "../src/github";
-import { reportFailure, run } from "../src/index";
+import { RELEASE_LIMITS, reportFailure, run } from "../src/index";
 import { folderHasIndexHtml, readInputs } from "../src/inputs";
 import { uploadFolderToS3, writeCompletionMarker } from "../src/s3";
 import { notifyRollout } from "../src/slack";
@@ -173,6 +173,36 @@ describe("when running the cdn-deploy action", () => {
       expect(writeCompletionMarkerMock).toHaveBeenCalledTimes(1);
     });
 
+    /**
+     * "Written last" is the whole invariant -- the marker is what makes a prefix eligible
+     * for a rollout, so a marker that lands before the objects would let a crashed upload
+     * read as complete. The suite asserted THAT it was written and WHAT was in it, never
+     * WHEN.
+     */
+    it("should write the marker only after the objects are uploaded", async () => {
+      await run();
+
+      expect(uploadFolderToS3Mock.mock.invocationCallOrder[0]).toBeLessThan(
+        writeCompletionMarkerMock.mock.invocationCallOrder[0],
+      );
+    });
+
+    // Fire-and-forget would swallow the failure, report the run a success, and leave a
+    // prefix that can never be published.
+    it("should fail the run when the marker cannot be written", async () => {
+      writeCompletionMarkerMock.mockRejectedValueOnce(new Error("AccessDenied"));
+
+      await expect(run()).rejects.toThrow("AccessDenied");
+    });
+
+    it("should not roll out when the marker could not be written", async () => {
+      writeCompletionMarkerMock.mockRejectedValueOnce(new Error("AccessDenied"));
+
+      await run().catch(() => undefined);
+
+      expect(broker.rollout).not.toHaveBeenCalled();
+    });
+
     it("should record how many objects it wrote in the marker", async () => {
       uploadFolderToS3Mock.mockResolvedValue(["a", "b", "c"]);
 
@@ -310,6 +340,100 @@ describe("when running the cdn-deploy action", () => {
       await run();
 
       expect(setOutputMock).toHaveBeenCalledWith("mode", "copy");
+    });
+  });
+
+  /**
+   * The loop had no cap, no deadline and no progress check, and no pause on the progress
+   * path -- so a broker answering "not done" forever burned the whole job timeout, and one
+   * answering without a continuation hot-looped. These pin all three exits.
+   */
+  describe("and the broker never reports the copy as finished", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      // Same token, same count: it is not getting anywhere.
+      broker.release.mockResolvedValue({ complete: false, copied: 640, continuation: "stuck" });
+    });
+
+    it("should give up rather than loop forever", async () => {
+      await expect(run()).rejects.toThrow(/stopped making progress/);
+    });
+
+    it("should stop after a handful of attempts", async () => {
+      await run().catch(() => undefined);
+
+      expect(broker.release.mock.calls.length).toBeLessThan(10);
+    });
+  });
+
+  describe("and the broker reports the copy unfinished with nothing to resume from", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.release.mockResolvedValue({ complete: false, copied: 1 });
+    });
+
+    // Without this it re-issued immediately with an undefined continuation, restarting the
+    // copy every iteration with no pause between attempts.
+    it("should fail instead of restarting the copy", async () => {
+      await expect(run()).rejects.toThrow(/nothing to resume from/);
+    });
+
+    it("should not call the broker again after the first answer", async () => {
+      await run().catch(() => undefined);
+
+      expect(broker.release).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("and the source build never finishes", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.release.mockRejectedValue(
+        new BrokerError("source_not_ready", 409, "still uploading", {}, 0),
+      );
+      RELEASE_LIMITS.maxSourceWaitMs = 0;
+    });
+
+    afterEach(() => {
+      RELEASE_LIMITS.maxSourceWaitMs = 30 * 60_000;
+    });
+
+    // A source build that failed will never land. Waiting out the job timeout reports
+    // "timed out" instead of naming the workflow that actually broke.
+    it("should stop waiting rather than burn the job timeout", async () => {
+      await expect(run()).rejects.toThrow(/still has not finished/);
+    });
+
+    it("should say the source most likely failed", async () => {
+      await expect(run()).rejects.toThrow(/most likely failed/);
+    });
+  });
+
+  describe("and force is set on a run with nothing to write", () => {
+    /**
+     * `force` used to reach the planner, which refused -- but only after a 15-minute write
+     * session had been minted for work that could never happen. It is a mistake, not a
+     * modifier, when there are no bytes to redo.
+     */
+    beforeEach(() => {
+      inputs = buildInputs({ version: "9.9.9", force: true, environments: [] });
+      readInputsMock.mockReturnValue(inputs);
+    });
+
+    it("should refuse and say what to pass instead", async () => {
+      await expect(run()).rejects.toThrow(/no bytes to write/);
+    });
+
+    it("should not mint credentials for work it cannot do", async () => {
+      await run().catch(() => undefined);
+
+      expect(broker.requestCredentials).not.toHaveBeenCalled();
     });
   });
 

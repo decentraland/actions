@@ -77920,7 +77920,18 @@ function createBrokerClient(opts) {
         });
     }
     return {
-        requestCredentials: (body) => post("/credentials", body),
+        requestCredentials: async (body) => {
+            const grant = await post("/credentials", body);
+            // Registered at the parse site, so every grant is masked -- not just the ones that
+            // happen to flow through the self-refreshing credentials. A grant is a live STS
+            // session; `core.setSecret` is what keeps it out of the run log if anything ever
+            // prints it.
+            if (grant.credentials) {
+                core.setSecret(grant.credentials.secretAccessKey);
+                core.setSecret(grant.credentials.sessionToken);
+            }
+            return grant;
+        },
         release: (body) => post("/release", body),
         rollout: (body) => post("/rollout", body),
     };
@@ -78241,6 +78252,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.RELEASE_LIMITS = void 0;
 exports.reportFailure = reportFailure;
 exports.run = run;
 const core = __importStar(__nccwpck_require__(37484));
@@ -78295,10 +78307,15 @@ async function run() {
         // A pure repoint writes nothing, so it needs no credentials — and asking for them would
         // make a rollback depend on STS. Whether the bytes are really there is checked
         // authoritatively by the broker before it touches the rollout record.
-        const needsWrite = !!(inputs.distPath ||
-            inputs.sourceVersion ||
-            inputs.copyFromCommit ||
-            inputs.force);
+        const hasBytesToWrite = !!(inputs.distPath || inputs.sourceVersion || inputs.copyFromCommit);
+        // `force` means "redo the upload or copy", so on a run with nothing to redo it is a
+        // mistake rather than a modifier. Caught here, before a 15-minute write session is
+        // minted for work that cannot happen.
+        if (inputs.force && !hasBytesToWrite) {
+            throw new Error("`force` was set, but this run has no bytes to write: pass `dist-path`, `source-version` " +
+                "or `copy-from-commit`. To repoint an environment at a version already in S3, drop `force`.");
+        }
+        const needsWrite = hasBytesToWrite;
         if (needsWrite) {
             const grant = await broker.requestCredentials({ packageName, version: targetVersion });
             const plan = (0, plan_1.resolveEnsurePlan)({
@@ -78413,16 +78430,40 @@ async function uploadToCdn(inputs, broker, ctx) {
     });
 }
 /**
+ * How far the resumable copy is allowed to go before the action gives up.
+ *
+ * A release of the largest site is a handful of calls; hundreds means something is wrong.
+ * The source wait is generous because it is legitimately waiting on another workflow, but
+ * it is not unbounded -- a source build that failed will never land, and burning the job's
+ * whole timeout reports "timed out" instead of naming the real cause.
+ */
+exports.RELEASE_LIMITS = {
+    maxCalls: 300,
+    maxStalls: 3,
+    maxSourceWaitMs: 30 * 60000,
+};
+/**
  * Drives the broker's resumable copy to completion.
  *
  * No AWS credentials are involved: the copy happens inside S3, issued by the broker. The
  * loop exists because API Gateway caps a single call at 29 seconds and a site can be a few
  * thousand objects once the compressed variants are counted.
  */
-async function copyRelease(broker, ctx) {
+async function copyRelease(broker, ctx, limits = exports.RELEASE_LIMITS) {
     await core.group(`Releasing ${ctx.sourceVersion} -> ${ctx.targetVersion}`, async () => {
         let continuation;
+        let calls = 0;
+        let waitedMs = 0;
+        let lastCopied = -1;
+        let stalls = 0;
         for (;;) {
+            // Bounded on three axes, because every one of them has hung a job: too many calls,
+            // too long waiting for a source that will never land, and a broker that keeps
+            // answering "not done" without getting further.
+            if (++calls > limits.maxCalls) {
+                throw new Error(`The release copy did not finish after ${limits.maxCalls} calls. Something is wrong ` +
+                    "with the broker or the source prefix; check the run log and retry.");
+            }
             let progress;
             try {
                 progress = await broker.release({
@@ -78434,11 +78475,19 @@ async function copyRelease(broker, ctx) {
             }
             catch (e) {
                 // A release routinely races the commit build that produced its source, so this is
-                // a wait rather than a failure.
+                // a wait rather than a failure -- but only for as long as that build could
+                // plausibly still be running.
                 if (e instanceof broker_1.BrokerError && e.code === "source_not_ready") {
-                    const waitSeconds = e.retryAfterSeconds ?? 10;
+                    if (waitedMs >= limits.maxSourceWaitMs) {
+                        throw new Error(`The build being released (${ctx.sourceVersion}) still has not finished after ` +
+                            `${Math.round(limits.maxSourceWaitMs / 60000)} minutes. It most likely failed — check that ` +
+                            "workflow rather than waiting on this one.");
+                    }
+                    // A broker sending Retry-After: 0 would otherwise spin.
+                    const waitSeconds = Math.max(e.retryAfterSeconds ?? 10, 1);
                     core.info(`Source build not finished yet; waiting ${waitSeconds}s.`);
                     await sleep(waitSeconds * 1000);
+                    waitedMs += waitSeconds * 1000;
                     continue;
                 }
                 throw e;
@@ -78447,8 +78496,22 @@ async function copyRelease(broker, ctx) {
                 core.info(`Copied ${progress.objectCount ?? progress.copied} objects.`);
                 return;
             }
-            core.info(`Copied ${progress.copied} objects so far, continuing…`);
+            // "Not done" with nothing to resume from would restart the copy every iteration,
+            // with no pause between attempts.
+            if (!progress.continuation) {
+                throw new Error("The broker reported the release copy as unfinished but gave nothing to resume from. " +
+                    "Retry the job; if it persists the broker needs attention.");
+            }
+            // Same token and no new objects means it is not getting anywhere.
+            stalls =
+                progress.copied > lastCopied || progress.continuation !== continuation ? 0 : stalls + 1;
+            if (stalls >= limits.maxStalls) {
+                throw new Error(`The release copy stopped making progress at ${progress.copied} objects. Retry the job; ` +
+                    "if it persists the broker needs attention.");
+            }
+            lastCopied = progress.copied;
             continuation = progress.continuation;
+            core.info(`Copied ${progress.copied} objects so far, continuing…`);
         }
     });
 }

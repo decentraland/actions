@@ -865,32 +865,12 @@ describe("when reading the action inputs", () => {
     let result: ActionInputs;
 
     beforeEach(() => {
-      unsetInputs([
-        "cloudflare-account-id",
-        "cloudflare-api-token",
-        "cloudflare-namespace-zone",
-        "cloudflare-namespace-today",
-        "cloudflare-namespace-org",
-      ]);
       setInputs({ "deployment-environments": "[]" });
       result = readInputs();
     });
 
     it("should resolve with no environments", () => {
       expect(result.environments).toEqual([]);
-    });
-  });
-
-  describe("and a single namespace override is combined with the default environments", () => {
-    beforeEach(() => {
-      setInputs({ "cloudflare-namespace-id": "ns-override" });
-    });
-
-    // A single-namespace account is a legitimate setup; the duplicate write is
-    // collapsed rather than rejected.
-
-    it("should still report both environments for the rollout", () => {
-      expect(readInputs().environments).toEqual(["zone", "today"]);
     });
   });
 

@@ -126,7 +126,18 @@ export function createBrokerClient(opts: {
   }
 
   return {
-    requestCredentials: (body) => post<CredentialsGrant>("/credentials", body),
+    requestCredentials: async (body) => {
+      const grant = await post<CredentialsGrant>("/credentials", body);
+      // Registered at the parse site, so every grant is masked -- not just the ones that
+      // happen to flow through the self-refreshing credentials. A grant is a live STS
+      // session; `core.setSecret` is what keeps it out of the run log if anything ever
+      // prints it.
+      if (grant.credentials) {
+        core.setSecret(grant.credentials.secretAccessKey);
+        core.setSecret(grant.credentials.sessionToken);
+      }
+      return grant;
+    },
     release: (body) => post<ReleaseProgress>("/release", body),
     rollout: (body) => post<RolloutResult>("/rollout", body),
   };

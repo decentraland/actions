@@ -139,3 +139,55 @@ describe("when building brokered credentials", () => {
     });
   });
 });
+
+describe("when a grant is close to expiring", () => {
+  let fetchGrant: jest.Mock;
+
+  const get = (credentials: ReturnType<typeof createBrokeredCredentials>) =>
+    new Promise<void>((resolve, reject) =>
+      credentials.get((err) => (err ? reject(err) : resolve())),
+    );
+
+  beforeEach(() => jest.clearAllMocks());
+
+  /**
+   * The whole reason this file exists. aws-sdk v2 only re-mints when it believes the
+   * session has expired, so an expiry that ignores what the broker returned means a long
+   * upload signs parts with a dead session and dies mid-flight on ExpiredToken.
+   *
+   * `expiryWindow` is 120s, so a grant with less than that left must be treated as spent.
+   */
+  it("should mint a new one rather than sign with a spent session", async () => {
+    fetchGrant = jest
+      .fn()
+      .mockResolvedValue(grant({ expiration: new Date(Date.now() + 30_000).toISOString() }));
+    const credentials = createBrokeredCredentials({ fetchGrant });
+
+    await get(credentials);
+    await get(credentials);
+
+    expect(fetchGrant).toHaveBeenCalledTimes(2);
+  });
+
+  it("should reuse a grant that still has comfortable life left", async () => {
+    fetchGrant = jest
+      .fn()
+      .mockResolvedValue(grant({ expiration: new Date(Date.now() + 900_000).toISOString() }));
+    const credentials = createBrokeredCredentials({ fetchGrant });
+
+    await get(credentials);
+    await get(credentials);
+
+    expect(fetchGrant).toHaveBeenCalledTimes(1);
+  });
+
+  // The broker always sends one, but a missing expiration must not become "never expires".
+  it("should not treat a grant with no expiration as immortal", async () => {
+    fetchGrant = jest.fn().mockResolvedValue(grant({ expiration: undefined }));
+    const credentials = createBrokeredCredentials({ fetchGrant });
+
+    await get(credentials);
+
+    expect(credentials.expireTime.getTime()).toBeLessThanOrEqual(Date.now() + 900_000);
+  });
+});

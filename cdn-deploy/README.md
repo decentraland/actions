@@ -31,7 +31,7 @@ The precedence is the order of the first five rows (`force` and `deployment-envi
 
 **"Already deployed?" is the completion marker**, `<package-name>/<version>/.deploy-complete.json`, written as the _last_ object of an upload. Not a `HEAD` on `index.html`: an asset bundle deployed with `require-index: false` has none, so a HEAD probe could never see it — it would re-upload on every run and make every by-version repoint look like an empty target. And not "does any object exist under the prefix" either, which answers true as soon as the first file lands: a crashed or cancelled upload would then read as deployed, and a rollout would publish a half-written site. Re-running the same commit is idempotent (skips S3, just re-sets KV).
 
-That probe runs **broker-side**: the completion marker is checked when credentials are minted, and the answer comes back as `targetExists` on the grant. So every flow calls `/credentials`, including a repoint that uploads nothing — the point of it is that the KV must never be pointed at a prefix that isn't there. The rollout re-checks the marker itself before writing, so the decision the action makes here is a convenience, not the gate.
+That probe runs **broker-side**: the completion marker is checked when credentials are minted, and the answer comes back as `targetExists` on the grant. A run that writes bytes therefore learns whether it can skip. A pure repoint asks for no credentials at all, so it never sees `targetExists` — and does not need to, because `/rollout` re-checks the marker itself before touching the record. The KV is never pointed at a prefix that isn't there, and that guarantee lives in the broker rather than here.
 
 ### Versioning
 
@@ -135,7 +135,7 @@ Each is a job that checks out, then calls the action — see `decentraland/sites
 
 ## Runtime contract preserved
 
-The CF Worker serves `https://cdn.decentraland.org/<prefix>/<version>/…` and selects the version from a KV value `{ records: { <rolloutName>: RolloutRecord[] } }`. S3 key stays `<package-name>/<version>/…`, `prefix === packageName`, and the KV value is merged with [`patchRollouts`](https://www.npmjs.com/package/@well-known-components/rollouts-lib) (the same function `webhooks-receiver` used).
+The CF Worker serves `https://cdn.decentraland.org/<prefix>/<version>/…` and selects the version from a KV value `{ records: { <rolloutName>: RolloutRecord[] } }`. S3 key stays `<package-name>/<version>/…`, `prefix === packageName`, and the KV value is merged with `patchRollouts` — by the **broker**, not by this action, which no longer touches KV at all.
 
 ## Notes & caveats
 

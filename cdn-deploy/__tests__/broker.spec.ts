@@ -1,3 +1,7 @@
+const mockSetSecret = jest.fn();
+
+jest.mock("@actions/core", () => ({ setSecret: mockSetSecret }));
+
 import { BrokerError, createBrokerClient } from "../src/broker";
 import type { BrokerClient } from "../src/broker";
 
@@ -144,16 +148,16 @@ describe("when calling the deploy broker", () => {
 
     // The action waits on this rather than failing: a release routinely races the commit
     // build that produced its source.
+    it("should reject rather than treat a 409 as progress", async () => {
+      await expect(
+        client.release({ packageName: "@dcl/auth-site", version: "1.0.0", sourceVersion: "0.9.0" }),
+      ).rejects.toThrow(BrokerError);
+    });
+
     it("should carry the retry-after so the caller can wait the right amount", async () => {
-      try {
-        await client.release({
-          packageName: "@dcl/auth-site",
-          version: "1.0.0",
-          sourceVersion: "0.9.0",
-        });
-      } catch (error) {
-        expect((error as BrokerError).retryAfterSeconds).toBe(10);
-      }
+      await expect(
+        client.release({ packageName: "@dcl/auth-site", version: "1.0.0", sourceVersion: "0.9.0" }),
+      ).rejects.toMatchObject({ code: "source_not_ready", retryAfterSeconds: 10 });
     });
   });
 
@@ -212,5 +216,53 @@ describe("when the broker url has a trailing slash", () => {
     await client.requestCredentials({ packageName: "@dcl/x", version: "1.0.0" });
 
     expect(fetchMock.mock.calls[0][0]).toBe("https://cdn-deploy.decentraland.org/credentials");
+  });
+});
+
+describe("when a credentials grant comes back", () => {
+  let fetchMock: FetchMock;
+  let client: BrokerClient;
+
+  beforeEach(() => {
+    mockSetSecret.mockClear();
+    fetchMock = jest.fn();
+    client = createBrokerClient({
+      baseUrl: "https://cdn-deploy.decentraland.org",
+      audience: "dcl-cdn-deploy",
+      fetch: fetchMock,
+      getToken: async () => "token",
+    });
+    fetchMock.mockResolvedValue(
+      response(200, {
+        bucket: "cdn-bucket",
+        region: "us-east-1",
+        prefix: "@dcl/auth-site/1.0.0/",
+        targetExists: false,
+        expiresInSeconds: 900,
+        credentials: {
+          accessKeyId: "AKIA-TEST",
+          secretAccessKey: "the-secret",
+          sessionToken: "the-token",
+        },
+      }),
+    );
+  });
+
+  /**
+   * A grant is a live 15-minute STS session. Masking belongs at the parse site so every
+   * grant is registered -- not only the ones reaching the self-refreshing credentials. The
+   * first grant of an upload, and the ones minted on the copy and skip paths, never went
+   * through there.
+   */
+  it("should mask the secret access key", async () => {
+    await client.requestCredentials({ packageName: "@dcl/auth-site", version: "1.0.0" });
+
+    expect(mockSetSecret).toHaveBeenCalledWith("the-secret");
+  });
+
+  it("should mask the session token", async () => {
+    await client.requestCredentials({ packageName: "@dcl/auth-site", version: "1.0.0" });
+
+    expect(mockSetSecret).toHaveBeenCalledWith("the-token");
   });
 });
