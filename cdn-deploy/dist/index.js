@@ -78493,12 +78493,16 @@ async function copyRelease(broker, ctx, limits = exports.RELEASE_LIMITS) {
             // Bounded on three axes, because every one of them has hung a job: too many calls,
             // too long waiting for a source that will never land, and a broker that keeps
             // answering "not done" without getting further.
-            if (++calls > limits.maxCalls) {
+            // Counts copy attempts only. Source waits have their own budget below -- sharing
+            // one meant a broker sending a short Retry-After burned the call cap in minutes and
+            // then reported "the copy did not finish", naming the wrong thing entirely.
+            if (calls > limits.maxCalls) {
                 throw new Error(`The release copy did not finish after ${limits.maxCalls} calls. Something is wrong ` +
                     "with the broker or the source prefix; check the run log and retry.");
             }
             let progress;
             try {
+                calls++;
                 progress = await broker.release({
                     packageName: ctx.packageName,
                     version: ctx.targetVersion,
@@ -78521,6 +78525,7 @@ async function copyRelease(broker, ctx, limits = exports.RELEASE_LIMITS) {
                     core.info(`Source build not finished yet; waiting ${waitSeconds}s.`);
                     await sleep(waitSeconds * 1000);
                     waitedMs += waitSeconds * 1000;
+                    calls--; // it never got as far as copying anything
                     continue;
                 }
                 throw e;

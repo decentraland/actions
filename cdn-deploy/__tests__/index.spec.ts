@@ -389,6 +389,43 @@ describe("when running the cdn-deploy action", () => {
     });
   });
 
+  describe("and the source keeps saying it is not ready", () => {
+    /**
+     * The call cap used to count source-wait polls, so a broker sending a short
+     * Retry-After burned all 300 in minutes and the run failed with "the copy did not
+     * finish" — blaming the copy for a source build that had not started.
+     */
+    beforeEach(() => {
+      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      // One copy attempt allowed. If waits were counted against it — as they were — two
+      // of them would exhaust the budget before the copy is ever tried. At the real cap of
+      // 300 this distinction is invisible, which is why the cap is lowered here.
+      RELEASE_LIMITS.maxCalls = 1;
+      let polls = 0;
+      broker.release.mockImplementation(async () => {
+        // each wait sleeps at least a second (the Retry-After: 0 floor), so keep it short
+        if (++polls <= 2) throw new BrokerError("source_not_ready", 409, "still uploading", {}, 0);
+        return { complete: true, copied: 3, objectCount: 3 };
+      });
+    });
+
+    afterEach(() => {
+      RELEASE_LIMITS.maxCalls = 300;
+    });
+
+    it("should not spend the copy budget on waiting", async () => {
+      await expect(run()).resolves.toBeUndefined();
+    });
+
+    it("should go on to finish the copy once the source lands", async () => {
+      await run();
+
+      expect(broker.release).toHaveBeenCalledTimes(3);
+    });
+  });
+
   describe("and the source build never finishes", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
