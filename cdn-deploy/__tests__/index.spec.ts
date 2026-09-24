@@ -415,6 +415,52 @@ describe("when running the cdn-deploy action", () => {
     });
   });
 
+  describe("and the version is already published", () => {
+    /**
+     * The broker refuses to hand out write access to a published prefix rather than
+     * trusting the caller to skip. Re-running a deploy is an ordinary operation, so that
+     * refusal has to mean "already there" here, not "failed".
+     */
+    beforeEach(() => {
+      inputs = buildInputs({ distPath: "./dist", environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockRejectedValue(
+        new BrokerError("version_already_published", 409, "already published", {}),
+      );
+    });
+
+    it("should not fail the run", async () => {
+      await expect(run()).resolves.toBeUndefined();
+    });
+
+    it("should skip the upload", async () => {
+      await run();
+
+      expect(uploadFolderToS3Mock).not.toHaveBeenCalled();
+    });
+
+    it("should still roll out", async () => {
+      await run();
+
+      expect(broker.rollout).toHaveBeenCalledTimes(1);
+    });
+
+    it("should report the outcome as a skip", async () => {
+      await run();
+
+      expect(core.setOutput).toHaveBeenCalledWith("mode", "skip");
+    });
+
+    // Anything else from /credentials is a real failure and must not be swallowed.
+    it("should still fail on any other broker refusal", async () => {
+      broker.requestCredentials.mockRejectedValue(
+        new BrokerError("repository_mismatch", 403, "not your package", {}),
+      );
+
+      await expect(run()).rejects.toThrow("not your package");
+    });
+  });
+
   describe("and force is set on a run with nothing to write", () => {
     /**
      * `force` used to reach the planner, which refused -- but only after a 15-minute write

@@ -77,30 +77,52 @@ async function run(): Promise<void> {
     const needsWrite = hasBytesToWrite;
 
     if (needsWrite) {
-      const grant = await broker.requestCredentials({ packageName, version: targetVersion });
-      const plan = resolveEnsurePlan({
-        folderPresent: !!inputs.distPath,
-        sourceVersion: inputs.sourceVersion,
-        targetVersion,
-        commitVersion,
-        targetExists: grant.targetExists,
-        force: inputs.force,
-        copyFromCommit: inputs.copyFromCommit,
-      });
+      // A published version is immutable, and the broker refuses to hand out write access
+      // to one rather than trusting the caller to skip. That refusal is the authoritative
+      // "already deployed" answer, so it is a skip here and not a failure -- re-running a
+      // deploy stays idempotent, it just cannot overwrite what is already live.
+      let grant;
+      try {
+        grant = await broker.requestCredentials({ packageName, version: targetVersion });
+      } catch (e) {
+        if (!(e instanceof BrokerError) || e.code !== "version_already_published") throw e;
+        core.info(`> ${remoteFolder} is already published — skipping the S3 write.`);
+        grant = undefined;
+      }
 
-      if (plan.s3 === "upload") {
-        await uploadToCdn(inputs, broker, { packageName, targetVersion, remoteFolder, sha, grant });
-        s3Action = "upload";
-      } else if (plan.s3 === "copy") {
-        await copyRelease(broker, {
-          packageName,
-          targetVersion,
-          sourceVersion: plan.source as string,
-        });
-        s3Action = "copy";
-      } else {
-        core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
+      if (!grant) {
         s3Action = "skip";
+      } else {
+        const plan = resolveEnsurePlan({
+          folderPresent: !!inputs.distPath,
+          sourceVersion: inputs.sourceVersion,
+          targetVersion,
+          commitVersion,
+          targetExists: grant.targetExists,
+          force: inputs.force,
+          copyFromCommit: inputs.copyFromCommit,
+        });
+
+        if (plan.s3 === "upload") {
+          await uploadToCdn(inputs, broker, {
+            packageName,
+            targetVersion,
+            remoteFolder,
+            sha,
+            grant,
+          });
+          s3Action = "upload";
+        } else if (plan.s3 === "copy") {
+          await copyRelease(broker, {
+            packageName,
+            targetVersion,
+            sourceVersion: plan.source as string,
+          });
+          s3Action = "copy";
+        } else {
+          core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
+          s3Action = "skip";
+        }
       }
     } else {
       core.info("> Repoint only — no S3 write.");
