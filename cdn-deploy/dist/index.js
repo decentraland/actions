@@ -79069,9 +79069,14 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.uploadFolderToS3 = uploadFolderToS3;
+exports.readUploadConfig = readUploadConfig;
 exports.writeCompletionMarker = writeCompletionMarker;
+const core = __importStar(__nccwpck_require__(37484));
 const AWS = __importStar(__nccwpck_require__(62605));
 const cdn_uploader_1 = __nccwpck_require__(71189);
+const utils_1 = __nccwpck_require__(21200);
+const fs = __importStar(__nccwpck_require__(79896));
+const path = __importStar(__nccwpck_require__(16928));
 const types_1 = __nccwpck_require__(38522);
 /**
  * Upload a built folder to the CDN bucket, with credentials the broker minted for exactly
@@ -79082,15 +79087,46 @@ const types_1 = __nccwpck_require__(38522);
  * populating those, and falling back to whatever the runner happens to have would be a
  * silent path to a wider credential than the broker granted.
  *
- * Returns the uploaded object keys — objects, not source files: the uploader writes up to
- * three per compressible file (`f`, `f.gzip`, `f.br`).
+ * Returns one entry per uploaded object — objects, not source files: the uploader writes
+ * up to three per compressible file (`f`, `f.gzip`, `f.br`). The entries are the S3
+ * `Location` URLs `s3.upload()` resolves with, not keys; only the count is used.
  */
 async function uploadFolderToS3(opts) {
-    const s3 = opts.s3 || new AWS.S3({ region: opts.region, credentials: opts.credentials });
-    return (0, cdn_uploader_1.uploadDir)(s3, opts.bucket, opts.folder, opts.remoteFolder, {
-        immutable: true,
-        concurrency: 10,
-    });
+    const s3 = opts.s3 ||
+        new AWS.S3({ region: opts.region, credentials: opts.credentials, signatureVersion: "v4" });
+    return (0, cdn_uploader_1.uploadDir)(s3, opts.bucket, opts.folder, opts.remoteFolder, readUploadConfig(opts.folder));
+}
+/** The per-site upload rules file, read from the root of the built folder. */
+const CONFIG_FILE = "config.yml";
+/**
+ * Per-file upload rules, merged the way static-sites-pipeline merges them.
+ *
+ * A site can ship a `config.yml` at the root of its build declaring `contentType`,
+ * `contentEncoding`, `cacheControl`, `variants` and `ignore` per glob. Ignoring it is not
+ * a cosmetic loss: `ignore: true` is how a site keeps files out of a public bucket, and a
+ * pre-compressed `*.wasm.br` gets no Content-Encoding or Content-Type without its rule,
+ * so the browser is handed a raw brotli stream it will not decode.
+ *
+ * `immutable` and `concurrency` are applied LAST so a site cannot override them, which is
+ * the same precedence the pipeline uses.
+ */
+function readUploadConfig(folder) {
+    const defaults = { immutable: true, concurrency: 10 };
+    const configPath = path.join(folder, CONFIG_FILE);
+    if (!fs.existsSync(configPath))
+        return defaults;
+    try {
+        const config = { ...(0, utils_1.readConfiguration)(configPath), ...defaults };
+        core.info(`Using the upload rules from ${CONFIG_FILE}.`);
+        return config;
+    }
+    catch (e) {
+        // Deliberately fatal, unlike the pipeline, which falls back to the defaults and logs.
+        // Silently dropping the rules is how a file marked `ignore` reaches a public bucket.
+        throw new Error(`Could not read "${configPath}": ${e instanceof Error ? e.message : String(e)}. ` +
+            "Fix the file or remove it — deploying without its rules would upload files it excludes " +
+            "and strip the content types it sets.");
+    }
 }
 /**
  * Write the completion marker, last.
@@ -79100,7 +79136,8 @@ async function uploadFolderToS3(opts) {
  * "does an object exist?" check answers true as soon as the first file lands.
  */
 async function writeCompletionMarker(opts) {
-    const s3 = opts.s3 || new AWS.S3({ region: opts.region, credentials: opts.credentials });
+    const s3 = opts.s3 ||
+        new AWS.S3({ region: opts.region, credentials: opts.credentials, signatureVersion: "v4" });
     await s3
         .putObject({
         Bucket: opts.bucket,
@@ -79108,6 +79145,10 @@ async function writeCompletionMarker(opts) {
         Body: JSON.stringify(opts.marker),
         ContentType: "application/json",
         // Matches every other object the uploader writes into this public CDN prefix.
+        // public-read matches every other object the uploader writes, because the bucket is
+        // a public CDN origin. The cache header deliberately does NOT match: content objects
+        // are immutable and cached for a year, whereas this one is read to decide whether a
+        // version is publishable and must never be answered from a cache.
         ACL: "public-read",
         CacheControl: "no-cache",
     })
