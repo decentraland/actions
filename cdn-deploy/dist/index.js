@@ -78717,7 +78717,15 @@ const types_1 = __nccwpck_require__(38522);
 exports.ENVIRONMENTS = ["zone", "today", "org"];
 exports.DEFAULT_CDN_BASE_URL = "https://cdn.decentraland.org";
 exports.DEFAULT_ROLLOUT_NAME = "_site";
-exports.DEFAULT_ENVIRONMENTS = ["zone", "today"];
+/**
+ * Just the dev channel.
+ *
+ * A merge to master deploys to zone; staging and production are promoted deliberately, by
+ * a human, from a job that declares a GitHub environment so its protection rules apply.
+ * Defaulting to `["zone","today"]` made every merge publish zone and then be refused for
+ * today, leaving the job red with the dev rollout already live.
+ */
+exports.DEFAULT_ENVIRONMENTS = ["zone"];
 /** An npm package name, optionally scoped. Also the S3 key root and KV prefix. */
 const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const PACKAGE_NAME_MAX = 214;
@@ -79077,6 +79085,14 @@ function isRetryable(e) {
     if (e instanceof TypeError || e instanceof ReferenceError || e instanceof SyntaxError) {
         return false;
     }
+    // `rollout_in_progress` is a 409, but the broker means it as "wait", not "no": another
+    // rollout holds the lease on that key and will finish in well under a second. It even
+    // sends Retry-After. Treating it as terminal failed a deploy the server intended to
+    // succeed — including when the retry collided with the caller's OWN first attempt after
+    // an API Gateway 504.
+    const code = e?.code;
+    if (code === "rollout_in_progress")
+        return true;
     const status = e?.status;
     if (typeof status === "number")
         return status === 429 || status >= 500;

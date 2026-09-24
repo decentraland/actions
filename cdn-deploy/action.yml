@@ -25,7 +25,7 @@ inputs:
     description: "Base version the deployed version is built from. Defaults to `version` in the repo-root package.json; set it when the repo isn't checked out."
     required: false
   deployment-environments:
-    description: 'Environments to repoint, as a JSON array or comma list (e.g. ''["zone","today"]''). Empty array ''[]'' stages the bytes in S3 without touching any KV. Defaults to zone + today. Mutually exclusive with `deployment-environment`.'
+    description: 'Environments to repoint, as a JSON array or comma list (e.g. ''["zone"]''). Empty array ''[]'' stages the bytes in S3 without touching any KV. Defaults to zone only — staging and production are promoted deliberately from a job that declares a GitHub environment. Mutually exclusive with `deployment-environment`.'
     required: false
   deployment-environment:
     description: "Single-environment shorthand for `deployment-environments` (e.g. `org`)."

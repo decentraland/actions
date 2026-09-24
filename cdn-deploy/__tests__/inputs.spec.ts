@@ -667,8 +667,8 @@ describe("when reading the action inputs", () => {
       expect(result.createGithubDeployment).toBe(true);
     });
 
-    it("should default the environments to zone and today", () => {
-      expect(result.environments).toEqual(["zone", "today"]);
+    it("should default the environments to the dev channel only", () => {
+      expect(result.environments).toEqual(["zone"]);
     });
 
     it("should leave the dist path empty for copy and repoint flows", () => {

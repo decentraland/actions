@@ -396,3 +396,24 @@ describe("when the callback throws a programming error", () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 });
+
+describe("when the broker reports a rollout already in progress", () => {
+  /**
+   * The broker answers 409 with a Retry-After and means "wait": another rollout holds the
+   * lease on that key and finishes in well under a second. Treating it as terminal failed
+   * deploys the server intended to succeed — including the case where a client retry after
+   * an API Gateway 504 collided with its own first invocation still holding the lease.
+   */
+  it("should treat it as transient despite being a 4xx", () => {
+    expect(isRetryable({ status: 409, code: "rollout_in_progress" })).toBe(true);
+  });
+
+  it("should still treat other 409s as the caller's problem", () => {
+    expect(isRetryable({ status: 409, code: "version_already_published" })).toBe(false);
+    expect(isRetryable({ status: 409, code: "source_not_ready" })).toBe(false);
+  });
+
+  it("should still refuse to retry an ordinary refusal", () => {
+    expect(isRetryable({ status: 403, code: "repository_mismatch" })).toBe(false);
+  });
+});

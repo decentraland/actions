@@ -10,6 +10,14 @@ export function isRetryable(e: unknown): boolean {
   if (e instanceof TypeError || e instanceof ReferenceError || e instanceof SyntaxError) {
     return false;
   }
+  // `rollout_in_progress` is a 409, but the broker means it as "wait", not "no": another
+  // rollout holds the lease on that key and will finish in well under a second. It even
+  // sends Retry-After. Treating it as terminal failed a deploy the server intended to
+  // succeed — including when the retry collided with the caller's OWN first attempt after
+  // an API Gateway 504.
+  const code = (e as { code?: string } | undefined)?.code;
+  if (code === "rollout_in_progress") return true;
+
   const status = (e as { status?: number } | undefined)?.status;
   if (typeof status === "number") return status === 429 || status >= 500;
   // No status at all means it never got a response — DNS, TLS, connection reset.

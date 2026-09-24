@@ -6,7 +6,15 @@ import { ActionInputs, DEFAULT_BROKER_URL, DEFAULT_OIDC_AUDIENCE, Environment } 
 export const ENVIRONMENTS: Environment[] = ["zone", "today", "org"];
 export const DEFAULT_CDN_BASE_URL = "https://cdn.decentraland.org";
 export const DEFAULT_ROLLOUT_NAME = "_site";
-export const DEFAULT_ENVIRONMENTS: Environment[] = ["zone", "today"];
+/**
+ * Just the dev channel.
+ *
+ * A merge to master deploys to zone; staging and production are promoted deliberately, by
+ * a human, from a job that declares a GitHub environment so its protection rules apply.
+ * Defaulting to `["zone","today"]` made every merge publish zone and then be refused for
+ * today, leaving the job red with the dev rollout already live.
+ */
+export const DEFAULT_ENVIRONMENTS: Environment[] = ["zone"];
 
 /** An npm package name, optionally scoped. Also the S3 key root and KV prefix. */
 const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
