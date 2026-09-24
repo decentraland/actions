@@ -29,9 +29,9 @@ The precedence is the order of the first five rows (`force` and `deployment-envi
 
 **Filling an absent target is opt-in.** "Repoint at version X" and "release-copy into version X" are the same input shape (`version` set, no folder), so a `version` that is merely absent — a typo, an expired prefix — is an error rather than being silently filled with whatever the current commit built and then served. Set `copy-from-commit: true` when you mean the release flow.
 
-**"Already deployed?" is a prefix listing**, not a `HEAD` on `<package-name>/<version>/index.html`: an asset bundle deployed with `require-index: false` has no `index.html`, so a HEAD probe could never see it — it would re-upload on every run and make every by-version repoint look like an empty target. A `listObjectsV2` capped at one key also answers honestly where S3 returns 403 instead of 404. Re-running the same commit is therefore idempotent (skips S3, just re-sets KV).
+**"Already deployed?" is the completion marker**, `<package-name>/<version>/.deploy-complete.json`, written as the *last* object of an upload. Not a `HEAD` on `index.html`: an asset bundle deployed with `require-index: false` has none, so a HEAD probe could never see it — it would re-upload on every run and make every by-version repoint look like an empty target. And not "does any object exist under the prefix" either, which answers true as soon as the first file lands: a crashed or cancelled upload would then read as deployed, and a rollout would publish a half-written site. Re-running the same commit is idempotent (skips S3, just re-sets KV).
 
-That probe runs on **every** flow, including a repoint that uploads nothing — the point of it is that the KV must never be pointed at a prefix that isn't there. This is why the AWS role is always required.
+That probe runs **broker-side**: the completion marker is checked when credentials are minted, and the answer comes back as `targetExists` on the grant. So every flow calls `/credentials`, including a repoint that uploads nothing — the point of it is that the KV must never be pointed at a prefix that isn't there. The rollout re-checks the marker itself before writing, so the decision the action makes here is a convenience, not the gate.
 
 ### Versioning
 
