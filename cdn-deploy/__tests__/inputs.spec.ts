@@ -355,6 +355,72 @@ describe("when validating the dist path", () => {
     });
   });
 
+  describe("and a .git directory is nested inside the build", () => {
+    let distPath: string;
+
+    beforeEach(() => {
+      distPath = path.join(workspace, "dist");
+      fs.mkdirSync(path.join(distPath, "vendor", "sdk", ".git"), { recursive: true });
+      fs.writeFileSync(
+        path.join(distPath, "vendor", "sdk", ".git", "config"),
+        "[http]\n  extraheader = AUTHORIZATION: basic <REDACTED>\n",
+      );
+    });
+
+    /**
+     * The root-only check missed this, and the uploader globs with `dot: true` and writes
+     * `public-read` — so a submodule or a vendored checkout put the runner's checkout
+     * token on the open internet, cached for a year.
+     */
+    it("should throw rather than publish it", () => {
+      expect(() => validateDistPath(distPath, workspace)).toThrow("a git directory nested");
+    });
+
+    it("should name where it is, so it can be removed", () => {
+      expect(() => validateDistPath(distPath, workspace)).toThrow(
+        path.join("vendor", "sdk", ".git"),
+      );
+    });
+
+    it("should say the config holds the checkout token", () => {
+      expect(() => validateDistPath(distPath, workspace)).toThrow("checkout token");
+    });
+  });
+
+  describe("and a submodule leaves a .git FILE rather than a directory", () => {
+    let distPath: string;
+
+    beforeEach(() => {
+      distPath = path.join(workspace, "dist");
+      fs.mkdirSync(path.join(distPath, "vendor"), { recursive: true });
+      fs.writeFileSync(
+        path.join(distPath, "vendor", ".git"),
+        "gitdir: ../../.git/modules/vendor\n",
+      );
+    });
+
+    it("should refuse that too", () => {
+      expect(() => validateDistPath(distPath, workspace)).toThrow("a git directory nested");
+    });
+  });
+
+  describe("and the build folder is ordinary", () => {
+    let distPath: string;
+
+    beforeEach(() => {
+      distPath = path.join(workspace, "dist");
+      fs.mkdirSync(path.join(distPath, "assets", "img"), { recursive: true });
+      fs.writeFileSync(path.join(distPath, "index.html"), "<html></html>");
+      fs.writeFileSync(path.join(distPath, "assets", "img", "logo.png"), "png");
+      // Dotfiles that are not secrets are normal build output and must still deploy.
+      fs.writeFileSync(path.join(distPath, ".well-known"), "{}");
+    });
+
+    it("should accept it", () => {
+      expect(validateDistPath(distPath, workspace)).toBe(distPath);
+    });
+  });
+
   describe("and no workspace is configured", () => {
     let distPath: string;
     let originalCwd: string;

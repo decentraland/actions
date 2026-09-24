@@ -291,7 +291,9 @@ async function copyRelease(
       // Counts copy attempts only. Source waits have their own budget below -- sharing
       // one meant a broker sending a short Retry-After burned the call cap in minutes and
       // then reported "the copy did not finish", naming the wrong thing entirely.
-      if (calls > limits.maxCalls) {
+      // `>=`, checked before the call that would exceed it: `>` let a 301st call through
+      // and then reported it as 300.
+      if (calls >= limits.maxCalls) {
         throw new Error(
           `The release copy did not finish after ${limits.maxCalls} calls. Something is wrong ` +
             "with the broker or the source prefix; check the run log and retry.",

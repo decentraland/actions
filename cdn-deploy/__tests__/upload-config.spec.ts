@@ -110,12 +110,13 @@ describe("when the config.yml cannot be read", () => {
   });
 });
 
-describe("when the config.yml parses but carries no usable rules", () => {
+describe("when the config.yml parses but the uploader would ignore part of it", () => {
   /**
-   * The uploader only applies rules when `matches` is an array, so a one-letter typo, a
-   * scalar, or a top-level list all yield a config with NO rules — and a site relying on
-   * `ignore:` to keep files out of a public bucket loses that silently. Being fatal is the
-   * whole reason the file is read at all.
+   * `getConfigurationForFile` copies only the keys it knows, so every misspelling in this
+   * file is dropped without a word — a site relying on `ignore:` to keep files out of a
+   * public bucket loses that silently, and a `variants` list the uploader does not
+   * recognise uploads zero objects for its glob. Being fatal is the whole reason the file
+   * is read at all.
    */
   const cases: Array<[string, string]> = [
     ["matches is misspelled", "mathces:\n  - match: 'a/**'"],
@@ -123,17 +124,92 @@ describe("when the config.yml parses but carries no usable rules", () => {
     ["the document is a list", "- match: 'a/**'"],
     ["the document is a scalar", "just-a-string"],
     ["a rule has no match string", "matches:\n  - ignore: true"],
+    ["a rule is a scalar", "matches:\n  - just-a-string"],
+    ["a rule key is misspelled", "matches:\n  - match: 'a/**'\n    ingore: true"],
+    ["a rule's variants list is empty", "matches:\n  - match: 'a/**'\n    variants: []"],
+    ["a rule names an unknown variant", "matches:\n  - match: 'a/**'\n    variants: [uncompresed]"],
+    ["the top-level variants list is empty", "variants: []"],
+    ["the top-level variants names an unknown one", "variants: [brotly]"],
   ];
 
   it.each(cases)("should refuse when %s", (_name, yaml) => {
     fs.writeFileSync(path.join(folder, "config.yml"), yaml);
 
-    expect(() => readUploadConfig(folder)).toThrow(/apply none of them/);
+    expect(() => readUploadConfig(folder)).toThrow(/silently ignores/);
   });
 
   it("should say the ignore rules would not be applied", () => {
     fs.writeFileSync(path.join(folder, "config.yml"), "mathces:\n  - match: 'a/**'");
 
-    expect(() => readUploadConfig(folder)).toThrow(/ignore/);
+    expect(() => readUploadConfig(folder)).toThrow(/`ignore` rule excludes/);
+  });
+
+  it("should name the key that is wrong", () => {
+    fs.writeFileSync(path.join(folder, "config.yml"), "mathces:\n  - match: 'a/**'");
+
+    expect(() => readUploadConfig(folder)).toThrow(/mathces/);
+  });
+});
+
+describe("when the config.yml is sparse but legitimate", () => {
+  /**
+   * `matches` is optional in the uploader's own type, so refusing these would take down the
+   * deploy of a site that has done nothing wrong.
+   */
+  it("should accept an empty file", () => {
+    fs.writeFileSync(path.join(folder, "config.yml"), "");
+
+    expect(() => readUploadConfig(folder)).not.toThrow();
+  });
+
+  it("should accept a file carrying only top-level options", () => {
+    fs.writeFileSync(path.join(folder, "config.yml"), "concurrency: 20\nskipRepeated: true");
+
+    expect(() => readUploadConfig(folder)).not.toThrow();
+  });
+
+  it("should still pin the options a site must not widen", () => {
+    fs.writeFileSync(path.join(folder, "config.yml"), "concurrency: 20\nskipRepeated: true");
+
+    expect(readUploadConfig(folder)).toEqual(
+      expect.objectContaining({ concurrency: 10, skipRepeated: false }),
+    );
+  });
+});
+
+describe("when the config.yml is a real one shipped by a site", () => {
+  /**
+   * wearable-preview's build, verbatim. Every Unity site narrows `variants` per glob so a
+   * pre-compressed `.br` is not compressed a second time, which is why `variants` is
+   * validated rather than pinned: pinning it would silently undo that.
+   */
+  const REAL_CONFIG = [
+    "matches:",
+    "  - match: 'static-local/**/*'",
+    "    ignore: true",
+    "",
+    "  - match: unity/Build/**/*.wasm.br",
+    "    contentEncoding: br",
+    "    contentType: application/wasm",
+    "    immutable: true",
+    "    variants: [uncompressed]",
+  ].join("\n");
+
+  beforeEach(() => {
+    fs.writeFileSync(path.join(folder, "config.yml"), REAL_CONFIG);
+  });
+
+  it("should accept it", () => {
+    expect(() => readUploadConfig(folder)).not.toThrow();
+  });
+
+  it("should leave the per-rule variants alone", () => {
+    const config = readUploadConfig(folder) as { matches: Array<Record<string, unknown>> };
+
+    expect(config.matches[1].variants).toEqual(["uncompressed"]);
+  });
+
+  it("should not pin a top-level variants that would override them", () => {
+    expect(readUploadConfig(folder)).not.toHaveProperty("variants");
   });
 });

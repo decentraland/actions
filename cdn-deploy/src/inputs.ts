@@ -192,13 +192,17 @@ export function validateDistPath(
     );
   }
 
-  assertNoEscapingSymlinks(real, distPath);
+  assertNothingPrivateInside(real, distPath);
 
   return distPath;
 }
 
 /**
- * Refuse a symlink inside the build folder that points outside it.
+ * Refuse anything inside the build folder that must not reach a public bucket.
+ *
+ * One walk, two rules — both about the same thing: the uploader globs `**\/*` with
+ * `dot: true` and writes every object `public-read`, so whatever is in here is about to be
+ * on the open internet.
  *
  * Checking the root is not enough. The uploader globs `**\/*` with `dot: true` and glob
  * follows symlinked directories, so a single `dist/assets -> ../.git` publishes the
@@ -213,10 +217,24 @@ export function validateDistPath(
  * Symlinks that stay inside the folder are fine — they resolve to content that was going
  * to be published anyway.
  */
-function assertNoEscapingSymlinks(root: string, distPath: string): void {
+function assertNothingPrivateInside(root: string, distPath: string): void {
   const walk = (dir: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
+
+      // Checking the root only was not enough. A submodule, a vendored checkout, or a
+      // build step that copies a repository in all leave a `.git` further down, and on a
+      // runner `.git/config` carries the `AUTHORIZATION: basic <token>` extraheader the
+      // checkout wrote — a live credential, published world-readable and cached for a
+      // year. A submodule's `.git` is a file rather than a directory, so neither is
+      // assumed here.
+      if (entry.name === ".git") {
+        throw new Error(
+          `dist-path "${distPath}" contains ${path.relative(root, full)}, a git directory nested ` +
+            "inside the build. It would be published to a public CDN bucket, and on a runner its " +
+            "config holds the checkout token. Remove it from the build output before deploying.",
+        );
+      }
 
       if (entry.isSymbolicLink()) {
         // realpath, not readlink: a relative link, and a chain of links, both have to be

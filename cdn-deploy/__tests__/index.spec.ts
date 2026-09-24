@@ -426,6 +426,41 @@ describe("when running the cdn-deploy action", () => {
     });
   });
 
+  describe("and the copy never reports itself complete", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant(false));
+      RELEASE_LIMITS.maxCalls = 4;
+      let copied = 0;
+      // Always progressing, so the stall detector never fires and only the call cap can
+      // stop it.
+      broker.release.mockImplementation(async () => ({
+        complete: false,
+        copied: (copied += 10),
+        continuation: `tok-${copied}`,
+      }));
+    });
+
+    afterEach(() => {
+      RELEASE_LIMITS.maxCalls = 300;
+    });
+
+    it("should give up rather than loop forever", async () => {
+      await expect(run()).rejects.toThrow(/did not finish after 4 calls/);
+    });
+
+    /**
+     * Exactly the number it reports, not one more. `>` let a 301st call through and then
+     * announced 300, so the cap in the message and the cap actually applied disagreed.
+     */
+    it("should make exactly as many calls as the message claims", async () => {
+      await run().catch(() => undefined);
+
+      expect(broker.release).toHaveBeenCalledTimes(4);
+    });
+  });
+
   describe("and the source build never finishes", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });

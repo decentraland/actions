@@ -2,6 +2,7 @@ import * as core from "@actions/core";
 import * as AWS from "aws-sdk";
 import { uploadDir } from "@dcl/cdn-uploader";
 import { readConfiguration } from "@dcl/cdn-uploader/dist/utils";
+import { configurationKeys, FileVariant } from "@dcl/cdn-uploader/dist/types";
 import * as fs from "fs";
 import * as path from "path";
 import { COMPLETION_MARKER_FILENAME } from "./types";
@@ -36,36 +37,89 @@ export async function uploadFolderToS3(opts: {
 /** The per-site upload rules file, read from the root of the built folder. */
 const CONFIG_FILE = "config.yml";
 
+/** Top-level keys `uploadDir` reads. Anything else in the file is dead text. */
+const TOP_LEVEL_KEYS = [
+  "matches",
+  "immutable",
+  "concurrency",
+  "dryRun",
+  "skipRepeated",
+  "variants",
+];
+
+/** Keys a single `matches` rule may carry — the uploader's own list, plus the glob itself. */
+const RULE_KEYS = ["match", ...configurationKeys];
+
+const VARIANTS = Object.values(FileVariant) as string[];
+
 /**
- * Refuse a config that parses but says nothing.
+ * Refuse a config the uploader would silently ignore.
  *
- * `readConfiguration` returns whatever the YAML happened to be, and the uploader only acts
- * on `matches` when it is an array — so `mathces:`, a string, or a top-level list all
- * produce a config with no rules at all. That is the dangerous shape: a site using
- * `ignore:` to keep files out of a public bucket loses the protection to a one-letter
- * typo, silently. Being fatal here is the whole point of reading the file.
+ * `readConfiguration` returns whatever the YAML happened to be and `getConfigurationForFile`
+ * copies only the keys it knows, so every misspelling in this file is dropped without a
+ * word. That is the dangerous shape rather than a malformed one: a site using `ignore:` to
+ * keep files out of a public bucket loses the protection to a one-letter typo, and a
+ * `variants` list naming nothing the uploader recognises uploads zero objects for its glob
+ * while the run still reports success. Being fatal here is the whole point of reading the
+ * file.
+ *
+ * An empty file, and a file carrying only top-level options, are both legitimate — `matches`
+ * is optional in the uploader's own type.
  */
 function assertUsableConfig(parsed: unknown, configPath: string): void {
   const bad = (why: string) => {
     throw new Error(
-      `"${configPath}" ${why}. It must be a mapping with a \`matches\` list of rules — as written ` +
-        "the uploader would apply none of them, publishing files an `ignore` rule excludes.",
+      `"${configPath}" ${why}. The uploader silently ignores what it does not understand, so ` +
+        "the deploy would publish files an `ignore` rule excludes and strip the content types a " +
+        "pre-compressed asset needs. Fix the key or remove it.",
     );
   };
 
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
-    bad("is not a mapping");
+  if (parsed === null || parsed === undefined) return;
+  if (typeof parsed !== "object" || Array.isArray(parsed)) bad("is not a mapping");
 
-  const matches = (parsed as { matches?: unknown }).matches;
-  if (matches === undefined) bad("has no `matches` list");
+  const config = parsed as Record<string, unknown>;
+  for (const key of Object.keys(config)) {
+    if (!TOP_LEVEL_KEYS.includes(key)) {
+      bad(`has an unknown top-level key \`${key}\` (expected one of ${TOP_LEVEL_KEYS.join(", ")})`);
+    }
+  }
+
+  assertUsableVariants(config.variants, "the top-level `variants`", bad);
+
+  const matches = config.matches;
+  if (matches === undefined) return;
   if (!Array.isArray(matches)) bad("has a `matches` that is not a list");
   for (const rule of matches as unknown[]) {
-    if (
-      rule === null ||
-      typeof rule !== "object" ||
-      typeof (rule as { match?: unknown }).match !== "string"
-    ) {
-      bad("has a rule without a string `match`");
+    if (rule === null || typeof rule !== "object" || Array.isArray(rule)) {
+      bad("has a `matches` entry that is not a mapping");
+      continue;
+    }
+    const entry = rule as Record<string, unknown>;
+    if (typeof entry.match !== "string") bad("has a rule without a string `match`");
+    for (const key of Object.keys(entry)) {
+      if (!RULE_KEYS.includes(key)) {
+        bad(`has a rule "${String(entry.match)}" with an unknown key \`${key}\``);
+      }
+    }
+    assertUsableVariants(entry.variants, `the \`variants\` of rule "${String(entry.match)}"`, bad);
+  }
+}
+
+/**
+ * A `variants` list is how many objects a file becomes. An empty list, or one naming a
+ * variant the uploader does not know, produces none — so the files it covers never reach
+ * the bucket and nothing says so.
+ */
+function assertUsableVariants(variants: unknown, where: string, bad: (why: string) => void): void {
+  if (variants === undefined) return;
+  if (!Array.isArray(variants) || variants.length === 0) {
+    bad(`has ${where} set to something other than a non-empty list, so it would upload nothing`);
+    return;
+  }
+  for (const variant of variants as unknown[]) {
+    if (typeof variant !== "string" || !VARIANTS.includes(variant)) {
+      bad(`names an unknown variant ${JSON.stringify(variant)} in ${where}`);
     }
   }
 }
@@ -103,15 +157,14 @@ export function readUploadConfig(folder: string): Record<string, unknown> {
 
   assertUsableConfig(parsed, configPath);
 
-  {
-    // dryRun, skipRepeated and variants are pinned alongside immutable and concurrency:
-    // uploadDir honours all five, and a site setting dryRun or an empty variants list
-    // uploads nothing while the run still reports success up to the "folder is empty"
-    // check, which then blames the build.
-    const config = { ...(parsed as Record<string, unknown>), ...defaults };
-    core.info(`Using the upload rules from ${CONFIG_FILE}.`);
-    return config;
-  }
+  // `dryRun` and `skipRepeated` are pinned alongside `immutable` and `concurrency`: uploadDir
+  // honours all four, and a site setting `dryRun` uploads nothing while the run still reports
+  // success up to the "folder is empty" check, which then blames the build. `variants` is NOT
+  // pinned -- choosing which compressed forms to write is a real per-site decision, made by
+  // every Unity build -- it is validated above instead.
+  const config = { ...(parsed as Record<string, unknown>), ...defaults };
+  core.info(`Using the upload rules from ${CONFIG_FILE}.`);
+  return config;
 }
 
 /**
