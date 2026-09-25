@@ -1,0 +1,211 @@
+import * as core from "@actions/core";
+import * as AWS from "aws-sdk";
+import { uploadDir } from "@dcl/cdn-uploader";
+import { readConfiguration } from "@dcl/cdn-uploader/dist/utils";
+import { configurationKeys, FileVariant } from "@dcl/cdn-uploader/dist/types";
+import * as fs from "fs";
+import * as path from "path";
+import { COMPLETION_MARKER_FILENAME } from "./types";
+
+/**
+ * Upload a built folder to the CDN bucket, with credentials the broker minted for exactly
+ * this version prefix.
+ *
+ * The client is constructed with an explicit credentials object rather than letting the
+ * v2 default chain find ambient `AWS_*` variables. There is no longer an assume-role step
+ * populating those, and falling back to whatever the runner happens to have would be a
+ * silent path to a wider credential than the broker granted.
+ *
+ * Returns one entry per uploaded object — objects, not source files: the uploader writes
+ * up to three per compressible file (`f`, `f.gzip`, `f.br`). The entries are the S3
+ * `Location` URLs `s3.upload()` resolves with, not keys; only the count is used.
+ */
+export async function uploadFolderToS3(opts: {
+  region: string;
+  bucket: string;
+  folder: string;
+  remoteFolder: string;
+  credentials: AWS.Credentials;
+  s3?: AWS.S3;
+}): Promise<string[]> {
+  const s3 =
+    opts.s3 ||
+    new AWS.S3({ region: opts.region, credentials: opts.credentials, signatureVersion: "v4" });
+  return uploadDir(s3, opts.bucket, opts.folder, opts.remoteFolder, readUploadConfig(opts.folder));
+}
+
+/** The per-site upload rules file, read from the root of the built folder. */
+const CONFIG_FILE = "config.yml";
+
+/** Top-level keys `uploadDir` reads. Anything else in the file is dead text. */
+const TOP_LEVEL_KEYS = [
+  "matches",
+  "immutable",
+  "concurrency",
+  "dryRun",
+  "skipRepeated",
+  "variants",
+];
+
+/** Keys a single `matches` rule may carry — the uploader's own list, plus the glob itself. */
+const RULE_KEYS = ["match", ...configurationKeys];
+
+const VARIANTS = Object.values(FileVariant) as string[];
+
+/**
+ * Refuse a config the uploader would silently ignore.
+ *
+ * `readConfiguration` returns whatever the YAML happened to be and `getConfigurationForFile`
+ * copies only the keys it knows, so every misspelling in this file is dropped without a
+ * word. That is the dangerous shape rather than a malformed one: a site using `ignore:` to
+ * keep files out of a public bucket loses the protection to a one-letter typo, and a
+ * `variants` list naming nothing the uploader recognises uploads zero objects for its glob
+ * while the run still reports success. Being fatal here is the whole point of reading the
+ * file.
+ *
+ * An empty file, and a file carrying only top-level options, are both legitimate — `matches`
+ * is optional in the uploader's own type.
+ */
+function assertUsableConfig(parsed: unknown, configPath: string): void {
+  const bad = (why: string) => {
+    throw new Error(
+      `"${configPath}" ${why}. The uploader silently ignores what it does not understand, so ` +
+        "the deploy would publish files an `ignore` rule excludes and strip the content types a " +
+        "pre-compressed asset needs. Fix the key or remove it.",
+    );
+  };
+
+  if (parsed === null || parsed === undefined) return;
+  if (typeof parsed !== "object" || Array.isArray(parsed)) bad("is not a mapping");
+
+  const config = parsed as Record<string, unknown>;
+  for (const key of Object.keys(config)) {
+    if (!TOP_LEVEL_KEYS.includes(key)) {
+      bad(`has an unknown top-level key \`${key}\` (expected one of ${TOP_LEVEL_KEYS.join(", ")})`);
+    }
+  }
+
+  assertUsableVariants(config.variants, "the top-level `variants`", bad);
+
+  const matches = config.matches;
+  if (matches === undefined) return;
+  if (!Array.isArray(matches)) bad("has a `matches` that is not a list");
+  for (const rule of matches as unknown[]) {
+    if (rule === null || typeof rule !== "object" || Array.isArray(rule)) {
+      bad("has a `matches` entry that is not a mapping");
+      continue;
+    }
+    const entry = rule as Record<string, unknown>;
+    if (typeof entry.match !== "string") bad("has a rule without a string `match`");
+    for (const key of Object.keys(entry)) {
+      if (!RULE_KEYS.includes(key)) {
+        bad(`has a rule "${String(entry.match)}" with an unknown key \`${key}\``);
+      }
+    }
+    assertUsableVariants(entry.variants, `the \`variants\` of rule "${String(entry.match)}"`, bad);
+  }
+}
+
+/**
+ * A `variants` list is how many objects a file becomes. An empty list, or one naming a
+ * variant the uploader does not know, produces none — so the files it covers never reach
+ * the bucket and nothing says so.
+ */
+function assertUsableVariants(variants: unknown, where: string, bad: (why: string) => void): void {
+  if (variants === undefined) return;
+  if (!Array.isArray(variants) || variants.length === 0) {
+    bad(`has ${where} set to something other than a non-empty list, so it would upload nothing`);
+    return;
+  }
+  for (const variant of variants as unknown[]) {
+    if (typeof variant !== "string" || !VARIANTS.includes(variant)) {
+      bad(`names an unknown variant ${JSON.stringify(variant)} in ${where}`);
+    }
+  }
+}
+
+/**
+ * Per-file upload rules, merged the way static-sites-pipeline merges them.
+ *
+ * A site can ship a `config.yml` at the root of its build declaring `contentType`,
+ * `contentEncoding`, `cacheControl`, `variants` and `ignore` per glob. Ignoring it is not
+ * a cosmetic loss: `ignore: true` is how a site keeps files out of a public bucket, and a
+ * pre-compressed `*.wasm.br` gets no Content-Encoding or Content-Type without its rule,
+ * so the browser is handed a raw brotli stream it will not decode.
+ *
+ * `immutable` and `concurrency` are applied LAST so a site cannot override them, which is
+ * the same precedence the pipeline uses.
+ */
+export function readUploadConfig(folder: string): Record<string, unknown> {
+  const defaults = { immutable: true, concurrency: 10, dryRun: false, skipRepeated: false };
+  const configPath = path.join(folder, CONFIG_FILE);
+
+  if (!fs.existsSync(configPath)) return defaults;
+
+  let parsed: unknown;
+  try {
+    parsed = readConfiguration(configPath) as unknown;
+  } catch (e) {
+    // Deliberately fatal, unlike the pipeline, which falls back to the defaults and logs.
+    // Silently dropping the rules is how a file marked `ignore` reaches a public bucket.
+    throw new Error(
+      `Could not read "${configPath}": ${e instanceof Error ? e.message : String(e)}. ` +
+        "Fix the file or remove it — deploying without its rules would upload files it excludes " +
+        "and strip the content types it sets.",
+    );
+  }
+
+  assertUsableConfig(parsed, configPath);
+
+  // `dryRun` and `skipRepeated` are pinned alongside `immutable` and `concurrency`: uploadDir
+  // honours all four, and a site setting `dryRun` uploads nothing while the run still reports
+  // success up to the "folder is empty" check, which then blames the build. `variants` is NOT
+  // pinned -- choosing which compressed forms to write is a real per-site decision, made by
+  // every Unity build -- it is validated above instead.
+  const config = { ...(parsed as Record<string, unknown>), ...defaults };
+  core.info(`Using the upload rules from ${CONFIG_FILE}.`);
+  return config;
+}
+
+/**
+ * Write the completion marker, last.
+ *
+ * This is what makes the prefix eligible for a rollout. The broker refuses to publish a
+ * version without it, which is what stops a crashed or cancelled upload being served: any
+ * "does an object exist?" check answers true as soon as the first file lands.
+ */
+export async function writeCompletionMarker(opts: {
+  region: string;
+  bucket: string;
+  remoteFolder: string;
+  credentials: AWS.Credentials;
+  marker: {
+    package: string;
+    version: string;
+    commit: string;
+    objectCount: number;
+    kind: "upload";
+    completedAt: string;
+    runId?: string;
+  };
+  s3?: AWS.S3;
+}): Promise<void> {
+  const s3 =
+    opts.s3 ||
+    new AWS.S3({ region: opts.region, credentials: opts.credentials, signatureVersion: "v4" });
+  await s3
+    .putObject({
+      Bucket: opts.bucket,
+      Key: `${opts.remoteFolder}/${COMPLETION_MARKER_FILENAME}`,
+      Body: JSON.stringify(opts.marker),
+      ContentType: "application/json",
+      // Matches every other object the uploader writes into this public CDN prefix.
+      // public-read matches every other object the uploader writes, because the bucket is
+      // a public CDN origin. The cache header deliberately does NOT match: content objects
+      // are immutable and cached for a year, whereas this one is read to decide whether a
+      // version is publishable and must never be answered from a cache.
+      ACL: "public-read",
+      CacheControl: "no-cache",
+    })
+    .promise();
+}

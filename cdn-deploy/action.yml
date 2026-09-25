@@ -1,0 +1,100 @@
+name: "Deploy static site to CDN"
+description: "Upload a pre-built site folder straight to S3 (via GitHub OIDC) and set the Cloudflare KV rollout, in a single step."
+branding:
+  icon: "upload-cloud"
+  color: "blue"
+
+inputs:
+  dist-path:
+    description: "Path to the pre-built site directory to upload (e.g. ./dist). The caller builds it. Must be a directory inside the workspace. Required for a normal deploy; omit for a release copy (`copy-from-commit`) or a repoint."
+    required: false
+  copy-from-commit:
+    description: "Release flow: when the target `version` is not yet in S3, fill it by copying the current commit's already-uploaded build. Off by default, so a `version` that is simply absent fails instead of being silently filled with whatever this commit built."
+    required: false
+    default: "false"
+  commit:
+    description: "Commit sha to compute the version from (manual deploy by commit). Defaults to the workflow commit. Must be a hex sha, not a branch name, and the repo must be checked out at it so the base version is read from package.json."
+    required: false
+  package-name:
+    description: "CDN prefix / S3 key root / KV record prefix. Defaults to `name` from the repo-root package.json. Validated as an npm package name."
+    required: false
+  base-version:
+    description: "Base version the deployed version is built from. Defaults to `version` in the repo-root package.json; set it when the repo isn't checked out."
+    required: false
+  deployment-environments:
+    description: 'Environments to repoint, as a JSON array or comma list (e.g. ''["zone"]''). Empty array ''[]'' stages the bytes in S3 without touching any KV. Defaults to zone only — staging and production are promoted deliberately from a job that declares a GitHub environment. Mutually exclusive with `deployment-environment`.'
+    required: false
+  force:
+    description: "Fail instead of skipping when the target version is already published. Nothing can overwrite a published version — the broker refuses — so this turns a silent 'already there' into a loud error for a run that meant to write new bytes."
+    required: false
+    default: "false"
+  deployment-name:
+    description: "Rollout name (key into the KV `records` map)."
+    required: false
+    default: "_site"
+  percentage:
+    description: "Rollout percentage (0-100) for the deployed version."
+    required: false
+    default: "100"
+  require-index:
+    description: "Fail a deploy when the folder has no index.html at its root (guards against an empty/broken build). Set to 'false' to deploy non-HTML asset bundles."
+    required: false
+    default: "true"
+  version:
+    description: "Target version. Defaults to the computed commit version. Provide it to deploy under a specific version (e.g. a release tag), or alone to repoint the KV at an already-uploaded version. A target that is absent from S3 is an error unless `dist-path`, `source-version` or `copy-from-commit` says how to fill it."
+    required: false
+  create-github-deployment:
+    description: "Create a GitHub deployment + commit status for observability. Needs `permissions: { deployments: write, statuses: write }`."
+    required: false
+    default: "true"
+  broker-url:
+    description: "Base URL of the cdn-deploy broker. It holds the Cloudflare token and the right to write the CDN bucket, so this action holds neither."
+    required: false
+    default: "https://cdn-deploy.decentraland.org"
+  oidc-audience:
+    description: "Audience requested on the GitHub OIDC token. Must match what the broker expects; the calling job needs `permissions: { id-token: write }`."
+    required: false
+    default: "dcl-cdn-deploy"
+  cdn-base-url:
+    description: "CDN origin used to compute the cdn-url output."
+    required: false
+    default: "https://cdn.decentraland.org"
+
+outputs:
+  version:
+    description: "The deployed version (computed snapshot, or the `version` input)."
+    value: ${{ steps.deploy.outputs.version }}
+  s3-path:
+    description: "The S3 key prefix that was uploaded: <package-name>/<version>."
+    value: ${{ steps.deploy.outputs.s3-path }}
+  cdn-url:
+    description: "<cdn-base-url>/<package-name>/<version> — where the worker serves the version from."
+    value: ${{ steps.deploy.outputs.cdn-url }}
+  mode:
+    description: "What the S3 step did: upload | copy | skip. Set before the KV write, so it is readable from an `if: always()` step even when the run later fails."
+    value: ${{ steps.deploy.outputs.mode }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Deploy to CDN and set rollout
+      id: deploy
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/dist/index.js"
+      env:
+        INPUT_DIST-PATH: ${{ inputs.dist-path }}
+        INPUT_COPY-FROM-COMMIT: ${{ inputs.copy-from-commit }}
+        INPUT_COMMIT: ${{ inputs.commit }}
+        INPUT_PACKAGE-NAME: ${{ inputs.package-name }}
+        INPUT_BASE-VERSION: ${{ inputs.base-version }}
+        INPUT_DEPLOYMENT-ENVIRONMENTS: ${{ inputs.deployment-environments }}
+        INPUT_DEPLOYMENT-NAME: ${{ inputs.deployment-name }}
+        INPUT_PERCENTAGE: ${{ inputs.percentage }}
+        INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}
+        INPUT_FORCE: ${{ inputs.force }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_BROKER-URL: ${{ inputs.broker-url }}
+        INPUT_OIDC-AUDIENCE: ${{ inputs.oidc-audience }}
+        INPUT_CREATE-GITHUB-DEPLOYMENT: ${{ inputs.create-github-deployment }}
+        INPUT_CDN-BASE-URL: ${{ inputs.cdn-base-url }}
+        GITHUB_TOKEN: ${{ github.token }}
