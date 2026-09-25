@@ -226,12 +226,67 @@ describe("when running the cdn-deploy action", () => {
     });
   });
 
+  describe("and a release copies a commit build into the tag", () => {
+    /**
+     * The release path must not hold a write session over the prefix it is publishing.
+     *
+     * It used to request one unconditionally and then never use it: the copy is
+     * server-side and the broker writes the marker, so the credential did nothing but sit
+     * in the job — through the rollout, the Slack post and every later step — holding
+     * `s3:PutObject` over the prefix that was about to become production. Anything that
+     * reached it could have replaced what the CDN serves in place, with no rollout call
+     * and nothing to approve, which is exactly what the immutability freeze exists to
+     * stop.
+     */
+    beforeEach(() => {
+      inputs = buildInputs({
+        version: RELEASE_VERSION,
+        copyFromCommit: true,
+        environments: ["zone"],
+      });
+      readInputsMock.mockReturnValue(inputs);
+      broker.release.mockResolvedValue({ complete: true, copied: 12, objectCount: 12 });
+    });
+
+    it("should not mint write credentials it does not use", async () => {
+      await run();
+
+      expect(broker.requestCredentials).not.toHaveBeenCalled();
+    });
+
+    it("should still perform the copy", async () => {
+      await run();
+
+      expect(broker.release).toHaveBeenCalledTimes(1);
+    });
+
+    it("should report the copy", async () => {
+      await run();
+
+      expect(setOutputMock).toHaveBeenCalledWith("mode", "copy");
+    });
+
+    it("should still roll out afterwards", async () => {
+      await run();
+
+      expect(broker.rollout).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("and the same commit is deployed again", () => {
+    /**
+     * Driven by the broker's refusal, which is the only way this is signalled. It used to
+     * be driven by a grant carrying `targetExists: true` — a value the broker hardcodes to
+     * false and never sends, so the test passed against a state that cannot occur while
+     * the real redeploy path went unexercised here.
+     */
     beforeEach(() => {
       inputs = buildInputs({ distPath: "./dist" });
       readInputsMock.mockReturnValue(inputs);
       folderHasIndexHtmlMock.mockReturnValue(true);
-      broker.requestCredentials.mockResolvedValue(grant(true));
+      broker.requestCredentials.mockRejectedValue(
+        new BrokerError("version_already_published", 409, "already published", {}),
+      );
     });
 
     it("should not upload again", async () => {

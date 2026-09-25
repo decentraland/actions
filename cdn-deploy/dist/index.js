@@ -78317,17 +78317,33 @@ async function run() {
         }
         const needsWrite = hasBytesToWrite;
         if (needsWrite) {
-            // A published version is immutable, and the broker refuses to hand out write access
-            // to one rather than trusting the caller to skip. That refusal is the authoritative
-            // "already deployed" answer, so it is a skip here and not a failure -- re-running a
-            // deploy stays idempotent, it just cannot overwrite what is already live.
-            let grant;
-            try {
-                grant = await broker.requestCredentials({ packageName, version: targetVersion });
-            }
-            catch (e) {
-                if (!(e instanceof broker_1.BrokerError) || e.code !== "version_already_published")
-                    throw e;
+            // Decided BEFORE any credential is requested, so the release path never asks for
+            // one. It used to: `requestCredentials` ran unconditionally here, which meant every
+            // release minted a 900-second write session over the tag prefix and then handed the
+            // copy to the broker without ever using it. That session sat in the job for the rest
+            // of the run — through the rollout, the Slack post, every later step and every
+            // dependency loaded into the same process — holding `s3:PutObject` over the prefix
+            // the broker was about to publish. Anything that got hold of it could replace what
+            // production serves, in place, with no rollout call and nothing to approve, which is
+            // precisely what the immutability freeze exists to stop.
+            //
+            // `targetExists` is false because the broker no longer reports it: it refuses to
+            // mint for a published version instead, and that refusal is handled below.
+            const plan = (0, plan_1.resolveEnsurePlan)({
+                folderPresent: !!inputs.distPath,
+                sourceVersion: inputs.sourceVersion,
+                targetVersion,
+                commitVersion,
+                targetExists: false,
+                force: inputs.force,
+                copyFromCommit: inputs.copyFromCommit,
+            });
+            // A published version is immutable, and the broker refuses to write one rather than
+            // trusting the caller to skip. That refusal is the authoritative "already deployed"
+            // answer on both paths, so it is a skip and not a failure -- re-running a deploy
+            // stays idempotent, it just cannot overwrite what is already live.
+            const isAlreadyPublished = (e) => e instanceof broker_1.BrokerError && e.code === "version_already_published";
+            const reportAlreadyPublished = () => {
                 // `force` means "write these bytes anyway", and a published version cannot be
                 // written at all — so honouring the skip here would report success for a run that
                 // did the opposite of what was asked.
@@ -78338,22 +78354,23 @@ async function run() {
                 }
                 core.info(`> ${remoteFolder} is already published — skipping the S3 write. What the CDN serves ` +
                     "for this version is what was published before, not what this run built.");
-                grant = undefined;
-            }
-            if (!grant) {
-                s3Action = "skip";
-            }
-            else {
-                const plan = (0, plan_1.resolveEnsurePlan)({
-                    folderPresent: !!inputs.distPath,
-                    sourceVersion: inputs.sourceVersion,
-                    targetVersion,
-                    commitVersion,
-                    targetExists: grant.targetExists,
-                    force: inputs.force,
-                    copyFromCommit: inputs.copyFromCommit,
-                });
-                if (plan.s3 === "upload") {
+                return "skip";
+            };
+            if (plan.s3 === "upload") {
+                let grant;
+                try {
+                    grant = await broker.requestCredentials({ packageName, version: targetVersion });
+                }
+                catch (e) {
+                    if (!isAlreadyPublished(e))
+                        throw e;
+                    s3Action = reportAlreadyPublished();
+                }
+                // Deliberately outside the catch above. A refusal during a mid-upload credential
+                // REFRESH must not be swallowed as "already published, nothing to do" -- that
+                // happens when another run publishes the version while this one is still writing,
+                // and reporting it as a skip would call a half-written prefix a success.
+                if (grant) {
                     await uploadToCdn(inputs, broker, {
                         packageName,
                         targetVersion,
@@ -78363,7 +78380,10 @@ async function run() {
                     });
                     s3Action = "upload";
                 }
-                else if (plan.s3 === "copy") {
+            }
+            else if (plan.s3 === "copy") {
+                // No credentials at all: the copy is server-side and the broker writes the marker.
+                try {
                     await copyRelease(broker, {
                         packageName,
                         targetVersion,
@@ -78371,10 +78391,15 @@ async function run() {
                     });
                     s3Action = "copy";
                 }
-                else {
-                    core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
-                    s3Action = "skip";
+                catch (e) {
+                    if (!isAlreadyPublished(e))
+                        throw e;
+                    s3Action = reportAlreadyPublished();
                 }
+            }
+            else {
+                core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
+                s3Action = "skip";
             }
         }
         else {
