@@ -173,17 +173,17 @@ describe("when running an operation with retry", () => {
 
     beforeEach(() => {
       fn = jest.fn();
-      fn.mockRejectedValueOnce(httpError("rate limited", 429)).mockResolvedValueOnce("slack sent");
+      fn.mockRejectedValueOnce(httpError("rate limited", 429)).mockResolvedValueOnce("call sent");
     });
 
     it("should resolve with the result of the successful attempt", async () => {
       await expect(
-        withRetry("slack", fn, { attempts: 3, baseDelayMs: 100, sleep, onRetry }),
-      ).resolves.toBe("slack sent");
+        withRetry("broker call", fn, { attempts: 3, baseDelayMs: 100, sleep, onRetry }),
+      ).resolves.toBe("call sent");
     });
 
     it("should call the operation twice", async () => {
-      await withRetry("slack", fn, { attempts: 3, baseDelayMs: 100, sleep, onRetry });
+      await withRetry("broker call", fn, { attempts: 3, baseDelayMs: 100, sleep, onRetry });
 
       expect(fn).toHaveBeenCalledTimes(2);
     });

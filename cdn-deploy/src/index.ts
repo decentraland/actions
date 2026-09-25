@@ -6,7 +6,6 @@ import { resolveEnsurePlan } from "./plan";
 import { uploadFolderToS3, writeCompletionMarker } from "./s3";
 import { BrokerError, createBrokerClient, type BrokerClient, type RolloutResult } from "./broker";
 import { createBrokeredCredentials } from "./credentials";
-import { notifyRollout } from "./slack";
 import { createObservability } from "./github";
 import { ActionInputs, Environment, S3Action } from "./types";
 
@@ -81,7 +80,7 @@ async function run(): Promise<void> {
       // one. It used to: `requestCredentials` ran unconditionally here, which meant every
       // release minted a 900-second write session over the tag prefix and then handed the
       // copy to the broker without ever using it. That session sat in the job for the rest
-      // of the run — through the rollout, the Slack post, every later step and every
+      // of the run — through the rollout, every later step in the job and every
       // dependency loaded into the same process — holding `s3:PutObject` over the prefix
       // the broker was about to publish. Anything that got hold of it could replace what
       // production serves, in place, with no rollout call and nothing to approve, which is
@@ -177,12 +176,10 @@ async function run(): Promise<void> {
     if (envs.length === 0) {
       core.info("> Stage only: bytes are in S3, no rollout requested.");
     } else {
-      const results = await rolloutEnvironments(broker, inputs, {
-        packageName,
-        targetVersion,
-        envs,
-      });
-      await notifyEnvironments(inputs, results, packageName, targetVersion);
+      // The broker announces each rollout to Slack itself. It is the thing that writes
+      // the KV record, so it is the only one that knows a rollout happened -- this job
+      // dying here used to mean a deploy went live unannounced.
+      await rolloutEnvironments(broker, inputs, { packageName, targetVersion, envs });
     }
 
     await observability.succeed();
@@ -431,33 +428,6 @@ async function rolloutEnvironments(
     );
   }
   return succeeded;
-}
-
-/** Slack is observability, never a reason to fail a deploy that already landed. */
-async function notifyEnvironments(
-  inputs: ActionInputs,
-  results: RolloutResult[],
-  packageName: string,
-  version: string,
-): Promise<void> {
-  if (!inputs.slackWebhook) return;
-  for (const result of results) {
-    try {
-      await notifyRollout({
-        webhookUrl: inputs.slackWebhook,
-        // The broker returns the human-facing URL, since it is the thing that knows which
-        // key the rollout landed on.
-        url: result.url,
-        rolloutName: result.rolloutName,
-        percentage: result.percentage,
-        prefix: packageName,
-        version,
-        onRetry: (message) => core.warning(message),
-      });
-    } catch (e) {
-      core.warning(`Slack notification failed: ${describe(e)}`);
-    }
-  }
 }
 
 /** Best-effort GitHub job summary table (no-op outside Actions / on failure). */

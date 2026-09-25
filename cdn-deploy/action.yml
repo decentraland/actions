@@ -49,9 +49,6 @@ inputs:
   version:
     description: "Target version. Defaults to the computed commit version. Provide it to deploy under a specific version (e.g. a release tag), or alone to repoint the KV at an already-uploaded version. A target that is absent from S3 is an error unless `dist-path`, `source-version` or `copy-from-commit` says how to fill it."
     required: false
-  slack-webhook:
-    description: "Incoming Slack webhook URL. Posts to the channel the webhook was installed on. Skipped if unset."
-    required: false
   create-github-deployment:
     description: "Create a GitHub deployment + commit status for observability. Needs `permissions: { deployments: write, statuses: write }`."
     required: false
@@ -106,7 +103,6 @@ runs:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_BROKER-URL: ${{ inputs.broker-url }}
         INPUT_OIDC-AUDIENCE: ${{ inputs.oidc-audience }}
-        INPUT_SLACK-WEBHOOK: ${{ inputs.slack-webhook }}
         INPUT_CREATE-GITHUB-DEPLOYMENT: ${{ inputs.create-github-deployment }}
         INPUT_CDN-BASE-URL: ${{ inputs.cdn-base-url }}
         GITHUB_TOKEN: ${{ github.token }}

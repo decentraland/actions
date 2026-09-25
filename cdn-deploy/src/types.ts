@@ -44,7 +44,6 @@ export type ActionInputs = {
    * a `version` that is merely absent fails instead of being silently filled.
    */
   copyFromCommit: boolean;
-  slackWebhook?: string;
   createGithubDeployment: boolean;
   cdnBaseUrl: string;
   /** The deploy broker's base URL. */

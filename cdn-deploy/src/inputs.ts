@@ -332,9 +332,6 @@ export function readInputs(): ActionInputs {
     );
   }
 
-  const slackWebhook = core.getInput("slack-webhook") || undefined;
-  if (slackWebhook) core.setSecret(slackWebhook);
-
   return {
     distPath,
     packageName,
@@ -348,7 +345,6 @@ export function readInputs(): ActionInputs {
     requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
     force: parseBooleanInput(core.getInput("force"), false, "force"),
     copyFromCommit: parseBooleanInput(core.getInput("copy-from-commit"), false, "copy-from-commit"),
-    slackWebhook,
     createGithubDeployment: parseBooleanInput(
       core.getInput("create-github-deployment"),
       true,

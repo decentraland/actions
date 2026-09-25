@@ -5,7 +5,6 @@ import { createObservability } from "../src/github";
 import { RELEASE_LIMITS, reportFailure, run } from "../src/index";
 import { folderHasIndexHtml, readInputs } from "../src/inputs";
 import { uploadFolderToS3, writeCompletionMarker } from "../src/s3";
-import { notifyRollout } from "../src/slack";
 import { ActionInputs } from "../src/types";
 
 jest.mock("@actions/core", () => ({
@@ -30,7 +29,6 @@ jest.mock("../src/broker", () => ({
   createBrokerClient: jest.fn(),
 }));
 jest.mock("../src/credentials");
-jest.mock("../src/slack");
 jest.mock("../src/github");
 
 type SummaryMock = { addHeading: jest.Mock; addTable: jest.Mock; write: jest.Mock };
@@ -91,7 +89,6 @@ describe("when running the cdn-deploy action", () => {
   let folderHasIndexHtmlMock: jest.MockedFunction<typeof folderHasIndexHtml>;
   let uploadFolderToS3Mock: jest.MockedFunction<typeof uploadFolderToS3>;
   let writeCompletionMarkerMock: jest.MockedFunction<typeof writeCompletionMarker>;
-  let notifyRolloutMock: jest.MockedFunction<typeof notifyRollout>;
   let createObservabilityMock: jest.MockedFunction<typeof createObservability>;
   let setOutputMock: jest.Mock;
   let groupMock: jest.Mock;
@@ -128,7 +125,6 @@ describe("when running the cdn-deploy action", () => {
     writeCompletionMarkerMock = writeCompletionMarker as jest.MockedFunction<
       typeof writeCompletionMarker
     >;
-    notifyRolloutMock = notifyRollout as jest.MockedFunction<typeof notifyRollout>;
 
     broker.rollout.mockImplementation(async ({ environment }: { environment: string }) =>
       rolloutResult(environment),
@@ -232,7 +228,7 @@ describe("when running the cdn-deploy action", () => {
      *
      * It used to request one unconditionally and then never use it: the copy is
      * server-side and the broker writes the marker, so the credential did nothing but sit
-     * in the job — through the rollout, the Slack post and every later step — holding
+     * in the job — through the rollout and every later step — holding
      * `s3:PutObject` over the prefix that was about to become production. Anything that
      * reached it could have replaced what the CDN serves in place, with no rollout call
      * and nothing to approve, which is exactly what the immutability freeze exists to
@@ -785,52 +781,6 @@ describe("when running the cdn-deploy action", () => {
       await expect(run()).rejects.toThrow();
 
       expect(observability.fail).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe("and Slack is configured", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ distPath: "./dist", slackWebhook: "https://hooks.slack.com/x" });
-      readInputsMock.mockReturnValue(inputs);
-      folderHasIndexHtmlMock.mockReturnValue(true);
-      broker.requestCredentials.mockResolvedValue(grant(false));
-      uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
-      notifyRolloutMock.mockResolvedValue(undefined);
-    });
-
-    it("should notify once per environment", async () => {
-      await run();
-
-      expect(notifyRolloutMock).toHaveBeenCalledTimes(2);
-    });
-
-    // The broker returns the URL because it is the thing that knows which key the rollout
-    // landed on.
-    it("should link each message to the url the broker reported", async () => {
-      await run();
-
-      expect(notifyRolloutMock.mock.calls.map((call) => call[0].url)).toEqual([
-        "https://decentraland.zone/auth",
-        "https://decentraland.today/auth",
-      ]);
-    });
-
-    describe("and the notification fails", () => {
-      beforeEach(() => {
-        notifyRolloutMock.mockRejectedValue(new Error("slack down"));
-      });
-
-      it("should warn rather than fail a deploy that already landed", async () => {
-        await run();
-
-        expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Slack"));
-      });
-
-      it("should still mark the deploy successful", async () => {
-        await run();
-
-        expect(observability.succeed).toHaveBeenCalledTimes(1);
-      });
     });
   });
 

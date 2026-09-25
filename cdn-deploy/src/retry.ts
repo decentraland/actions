@@ -27,11 +27,11 @@ export function isRetryable(e: unknown): boolean {
 /**
  * Run `fn`, retrying transient failures with exponential backoff.
  *
- * Cloudflare KV and Slack are plain HTTP calls with no client-side retry (the
+ * The broker's endpoints are plain HTTP calls with no client-side retry (the
  * aws-sdk already retries S3 itself). Without this a single 5xx fails the run
  * *after* the bytes are in S3, leaving the deploy half-applied: uploaded but
  * not repointed. Both operations are idempotent — a KV PUT writes the same
- * merged value, a Slack post is a duplicate message at worst — so retrying is
+ * merged value — so retrying is
  * safe.
  */
 export async function withRetry<T>(

@@ -987,7 +987,6 @@ describe("when reading the action inputs", () => {
         "aws-region": "us-west-2",
         "s3-bucket": "my-bucket",
         "cdn-base-url": "https://cdn.example.com",
-        "slack-webhook": "https://hooks.example.com/services/T000/B000/xxx",
         "deployment-environments": "zone",
       });
       result = readInputs();
@@ -1007,12 +1006,6 @@ describe("when reading the action inputs", () => {
 
     it("should return the CDN base url", () => {
       expect(result.cdnBaseUrl).toBe("https://cdn.example.com");
-    });
-
-    it("should mask the slack webhook", () => {
-      expect(setSecretMock).toHaveBeenCalledWith(
-        "https://hooks.example.com/services/T000/B000/xxx",
-      );
     });
   });
 });

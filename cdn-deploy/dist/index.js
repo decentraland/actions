@@ -78263,7 +78263,6 @@ const plan_1 = __nccwpck_require__(22464);
 const s3_1 = __nccwpck_require__(72049);
 const broker_1 = __nccwpck_require__(42494);
 const credentials_1 = __nccwpck_require__(33029);
-const slack_1 = __nccwpck_require__(16691);
 const github_1 = __nccwpck_require__(69248);
 async function run() {
     const inputs = (0, inputs_1.readInputs)();
@@ -78321,7 +78320,7 @@ async function run() {
             // one. It used to: `requestCredentials` ran unconditionally here, which meant every
             // release minted a 900-second write session over the tag prefix and then handed the
             // copy to the broker without ever using it. That session sat in the job for the rest
-            // of the run — through the rollout, the Slack post, every later step and every
+            // of the run — through the rollout, every later step in the job and every
             // dependency loaded into the same process — holding `s3:PutObject` over the prefix
             // the broker was about to publish. Anything that got hold of it could replace what
             // production serves, in place, with no rollout call and nothing to approve, which is
@@ -78414,12 +78413,10 @@ async function run() {
             core.info("> Stage only: bytes are in S3, no rollout requested.");
         }
         else {
-            const results = await rolloutEnvironments(broker, inputs, {
-                packageName,
-                targetVersion,
-                envs,
-            });
-            await notifyEnvironments(inputs, results, packageName, targetVersion);
+            // The broker announces each rollout to Slack itself. It is the thing that writes
+            // the KV record, so it is the only one that knows a rollout happened -- this job
+            // dying here used to mean a deploy went live unannounced.
+            await rolloutEnvironments(broker, inputs, { packageName, targetVersion, envs });
         }
         await observability.succeed();
         core.info(`✅ ${s3Action} ${packageName}@${targetVersion}` +
@@ -78616,29 +78613,6 @@ async function rolloutEnvironments(broker, inputs, ctx) {
             `First error: ${failures[0].error}`);
     }
     return succeeded;
-}
-/** Slack is observability, never a reason to fail a deploy that already landed. */
-async function notifyEnvironments(inputs, results, packageName, version) {
-    if (!inputs.slackWebhook)
-        return;
-    for (const result of results) {
-        try {
-            await (0, slack_1.notifyRollout)({
-                webhookUrl: inputs.slackWebhook,
-                // The broker returns the human-facing URL, since it is the thing that knows which
-                // key the rollout landed on.
-                url: result.url,
-                rolloutName: result.rolloutName,
-                percentage: result.percentage,
-                prefix: packageName,
-                version,
-                onRetry: (message) => core.warning(message),
-            });
-        }
-        catch (e) {
-            core.warning(`Slack notification failed: ${describe(e)}`);
-        }
-    }
 }
 /** Best-effort GitHub job summary table (no-op outside Actions / on failure). */
 async function writeSummary(s) {
@@ -79018,9 +78992,6 @@ function readInputs() {
         throw new Error(`\`version\` and \`source-version\` are both "${version}" — a version cannot be copied ` +
             "onto itself.");
     }
-    const slackWebhook = core.getInput("slack-webhook") || undefined;
-    if (slackWebhook)
-        core.setSecret(slackWebhook);
     return {
         distPath,
         packageName,
@@ -79034,7 +79005,6 @@ function readInputs() {
         requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
         force: parseBooleanInput(core.getInput("force"), false, "force"),
         copyFromCommit: parseBooleanInput(core.getInput("copy-from-commit"), false, "copy-from-commit"),
-        slackWebhook,
         createGithubDeployment: parseBooleanInput(core.getInput("create-github-deployment"), true, "create-github-deployment"),
         cdnBaseUrl: core.getInput("cdn-base-url") || exports.DEFAULT_CDN_BASE_URL,
         brokerUrl: core.getInput("broker-url") || types_1.DEFAULT_BROKER_URL,
@@ -79145,11 +79115,11 @@ function isRetryable(e) {
 /**
  * Run `fn`, retrying transient failures with exponential backoff.
  *
- * Cloudflare KV and Slack are plain HTTP calls with no client-side retry (the
+ * The broker's endpoints are plain HTTP calls with no client-side retry (the
  * aws-sdk already retries S3 itself). Without this a single 5xx fails the run
  * *after* the bytes are in S3, leaving the deploy half-applied: uploaded but
  * not repointed. Both operations are idempotent — a KV PUT writes the same
- * merged value, a Slack post is a duplicate message at worst — so retrying is
+ * merged value — so retrying is
  * safe.
  */
 async function withRetry(label, fn, opts = {}) {
@@ -79392,77 +79362,6 @@ async function writeCompletionMarker(opts) {
         CacheControl: "no-cache",
     })
         .promise();
-}
-
-
-/***/ }),
-
-/***/ 16691:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.SlackError = void 0;
-exports.notifyRollout = notifyRollout;
-const node_fetch_1 = __importDefault(__nccwpck_require__(26705));
-const retry_1 = __nccwpck_require__(49809);
-/** Carries the HTTP status so `withRetry` can tell a 429/5xx from a 4xx. */
-class SlackError extends Error {
-    constructor(message, status) {
-        super(message);
-        this.status = status;
-        this.name = "SlackError";
-    }
-}
-exports.SlackError = SlackError;
-/**
- * Post the "New rollout set" message to Slack. Same block layout as
- * `webhooks-receiver`'s `changeRollout`, so the channel reads identically after
- * the migration.
- *
- * The channel is NOT set here: an incoming webhook posts to the channel chosen
- * when it was installed, and a `channel` field is ignored (only the retired
- * legacy custom integrations honoured it). Point the webhook at `rollouts`.
- *
- * `text` is the notification fallback for a blocks message — without it the
- * push and notification-pane previews render empty.
- */
-async function notifyRollout(opts) {
-    const doFetch = opts.fetch || node_fetch_1.default;
-    const body = {
-        text: `New rollout set for ${opts.url}`,
-        blocks: [
-            {
-                type: "section",
-                text: { type: "mrkdwn", text: `New rollout set for ${opts.url}` },
-            },
-            {
-                type: "section",
-                fields: [
-                    { type: "mrkdwn", verbatim: true, text: `*Component:*\n\`${opts.rolloutName}\`` },
-                    { type: "mrkdwn", verbatim: true, text: `*Percentage of users:*\n${opts.percentage}%` },
-                    { type: "mrkdwn", verbatim: true, text: `*Package:*\n\`${opts.prefix}\`` },
-                    { type: "mrkdwn", verbatim: true, text: `*Version:*\n\`${opts.version}\`` },
-                ],
-            },
-        ],
-    };
-    await (0, retry_1.withRetry)("Slack notification", async () => {
-        const res = await doFetch(opts.webhookUrl, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(body),
-        });
-        const text = await res.text();
-        if (!res.ok) {
-            // The webhook URL is a bearer credential — keep it out of the message.
-            throw new SlackError(`Slack notification failed (${res.status}): ${text}`, res.status);
-        }
-    }, { sleep: opts.sleep, onRetry: opts.onRetry });
 }
 
 
