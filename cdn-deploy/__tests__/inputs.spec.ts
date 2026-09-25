@@ -675,29 +675,6 @@ describe("when reading the action inputs", () => {
     jest.restoreAllMocks();
   });
 
-  describe("and both deployment-environments and deployment-environment are set", () => {
-    beforeEach(() => {
-      setInputs({ "deployment-environments": '["zone"]', "deployment-environment": "today" });
-    });
-
-    it("should refuse rather than silently pick one", () => {
-      expect(() => readInputs()).toThrow("not both");
-    });
-  });
-
-  describe("and both a dist-path and a source-version are given", () => {
-    beforeEach(() => {
-      fs.mkdirSync(path.join(workspace, "dist"));
-      setInputs({ "dist-path": "./dist", "source-version": "1.0.0" });
-    });
-
-    // Otherwise the folder the caller just built would be silently discarded in favour of
-    // copying bytes already in S3.
-    it("should refuse rather than discard the built folder", () => {
-      expect(() => readInputs()).toThrow("not both");
-    });
-  });
-
   describe("and only the credentials are provided", () => {
     let result: ActionInputs;
 
@@ -877,53 +854,21 @@ describe("when reading the action inputs", () => {
     });
   });
 
-  describe("and only the singular deployment-environment is set", () => {
+  /**
+   * A bare name is why there is no separate singular input: `deployment-environment: org`
+   * and `deployment-environments: org` meant the same thing, and having both only created
+   * a way to set two inputs that disagree.
+   */
+  describe("and a single environment name is given", () => {
     let result: ActionInputs;
 
     beforeEach(() => {
-      setInputs({ "deployment-environment": "org" });
+      setInputs({ "deployment-environments": "org" });
       result = readInputs();
     });
 
     it("should use that single environment", () => {
       expect(result.environments).toEqual(["org"]);
-    });
-  });
-
-  describe("and the singular deployment-environment is unknown", () => {
-    beforeEach(() => {
-      setInputs({ "deployment-environment": "prod" });
-    });
-
-    it("should throw naming the invalid environment", () => {
-      expect(() => readInputs()).toThrow('Invalid environment "prod"');
-    });
-  });
-
-  describe("and version equals source-version", () => {
-    beforeEach(() => {
-      setInputs({ version: "1.2.3", "source-version": "1.2.3" });
-    });
-
-    it("should throw because a version cannot be copied onto itself", () => {
-      expect(() => readInputs()).toThrow("a version cannot be copied");
-    });
-  });
-
-  describe("and version and source-version differ", () => {
-    let result: ActionInputs;
-
-    beforeEach(() => {
-      setInputs({ version: "1.2.3", "source-version": "1.0.0" });
-      result = readInputs();
-    });
-
-    it("should return the requested target version", () => {
-      expect(result.version).toBe("1.2.3");
-    });
-
-    it("should return the requested source version", () => {
-      expect(result.sourceVersion).toBe("1.0.0");
     });
   });
 

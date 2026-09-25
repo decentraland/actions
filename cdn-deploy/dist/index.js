@@ -78306,13 +78306,13 @@ async function run() {
         // A pure repoint writes nothing, so it needs no credentials — and asking for them would
         // make a rollback depend on STS. Whether the bytes are really there is checked
         // authoritatively by the broker before it touches the rollout record.
-        const hasBytesToWrite = !!(inputs.distPath || inputs.sourceVersion || inputs.copyFromCommit);
+        const hasBytesToWrite = !!(inputs.distPath || inputs.copyFromCommit);
         // `force` means "redo the upload or copy", so on a run with nothing to redo it is a
         // mistake rather than a modifier. Caught here, before a 15-minute write session is
         // minted for work that cannot happen.
         if (inputs.force && !hasBytesToWrite) {
-            throw new Error("`force` was set, but this run has no bytes to write: pass `dist-path`, `source-version` " +
-                "or `copy-from-commit`. To repoint an environment at a version already in S3, drop `force`.");
+            throw new Error("`force` was set, but this run has no bytes to write: pass `dist-path` or " +
+                "`copy-from-commit`. To repoint an environment at a version already in S3, drop `force`.");
         }
         const needsWrite = hasBytesToWrite;
         if (needsWrite) {
@@ -78326,15 +78326,12 @@ async function run() {
             // production serves, in place, with no rollout call and nothing to approve, which is
             // precisely what the immutability freeze exists to stop.
             //
-            // `targetExists` is false because the broker no longer reports it: it refuses to
-            // mint for a published version instead, and that refusal is handled below.
+            // There is no "is it already there?" input: the broker refuses to mint for a
+            // published version, and that refusal is handled below.
             const plan = (0, plan_1.resolveEnsurePlan)({
                 folderPresent: !!inputs.distPath,
-                sourceVersion: inputs.sourceVersion,
                 targetVersion,
                 commitVersion,
-                targetExists: false,
-                force: inputs.force,
                 copyFromCommit: inputs.copyFromCommit,
             });
             // A published version is immutable, and the broker refuses to write one rather than
@@ -78969,29 +78966,12 @@ function readInputs() {
             "the repository out in the deploy job, or set the `base-version` input. (This used to " +
             "fall back to 0.0.0, which produced a version nobody serves.)");
     }
-    // environments: explicit plural > singular sugar > default [zone, today].
-    const envPlural = core.getInput("deployment-environments");
-    const envSingular = core.getInput("deployment-environment");
-    if (envPlural !== "" && envSingular !== "") {
-        throw new Error("Provide either `deployment-environments` or `deployment-environment`, not both.");
-    }
-    let environments;
-    if (envPlural !== "")
-        environments = parseEnvironments(envPlural); // may be [] (stage)
-    else if (envSingular !== "")
-        environments = [asEnvironment(envSingular)];
-    else
-        environments = exports.DEFAULT_ENVIRONMENTS;
+    // `deployment-environments` already accepts a bare name, a comma list or a JSON array,
+    // so `org` and `["zone","today"]` are both valid and a separate singular input bought
+    // nothing but a way to set two inputs that disagree.
+    const envInput = core.getInput("deployment-environments");
+    const environments = envInput !== "" ? parseEnvironments(envInput) : exports.DEFAULT_ENVIRONMENTS; // may be [] (stage)
     const version = core.getInput("version") || undefined;
-    const sourceVersion = core.getInput("source-version") || undefined;
-    if (distPath && sourceVersion) {
-        throw new Error("Provide either `dist-path` (publish these bytes) or `source-version` (copy bytes already " +
-            "in S3), not both — otherwise the folder you built would be silently discarded.");
-    }
-    if (version && sourceVersion && version === sourceVersion) {
-        throw new Error(`\`version\` and \`source-version\` are both "${version}" — a version cannot be copied ` +
-            "onto itself.");
-    }
     return {
         distPath,
         packageName,
@@ -79000,7 +78980,6 @@ function readInputs() {
         deploymentName: core.getInput("deployment-name") || exports.DEFAULT_ROLLOUT_NAME,
         percentage: parsePercentage(core.getInput("percentage")),
         version,
-        sourceVersion,
         commit: core.getInput("commit") || undefined,
         requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
         force: parseBooleanInput(core.getInput("force"), false, "force"),
@@ -79023,60 +79002,40 @@ function readInputs() {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.resolveEnsurePlan = resolveEnsurePlan;
 /**
- * Decide what to do with S3 for the target version, from the current S3 state.
- * Pure and testable. The action always repoints the KV afterwards (or stages,
- * if no environments are given) — this only covers the S3 side.
+ * Decide what to do with S3 for the target version. Pure and testable. The action always
+ * repoints the KV afterwards (or stages, if no environments are given) — this only covers
+ * the S3 side.
  *
- * Precedence is deliberate, and it is what keeps a caller from deploying bytes
- * it did not ask for:
+ * Precedence is deliberate:
  *
- * 1. target already populated and not `force` -> **skip**.
- * 2. an explicit `sourceVersion` -> **copy** from it. The caller named the
- *    bytes, so it outranks everything below.
- * 3. a `dist-path` was handed over -> **upload** it. A folder the caller built
- *    always beats the implicit commit-version source: `dist-path` + `version`
- *    means "publish THESE bytes under that version".
- * 4. `copyFromCommit` (the release flow) and the target is a different version
- *    -> **copy** the commit's already-uploaded build into it.
- * 5. nothing to populate it with -> error.
+ * 1. a `dist-path` was handed over -> **upload** it. The caller built those bytes and
+ *    named them, so they outrank the implicit commit-version source below.
+ * 2. `copyFromCommit` (the release flow) and the target is a different version -> **copy**
+ *    the commit's already-uploaded build into it.
+ * 3. nothing to populate it with -> error.
  *
- * Step 4 is opt-in on purpose. "Repoint at version X" and "release-copy into
- * version X" are otherwise the same input shape (`version` set, no folder), so
- * without the flag a target that is merely absent — a typo, an expired prefix —
- * would silently be filled with whatever the current commit built and then
- * served. Failing closed is the only safe default.
+ * Step 2 is opt-in on purpose. "Repoint at version X" and "release-copy into version X"
+ * are otherwise the same input shape (`version` set, no folder), so without the flag a
+ * target that is merely absent — a typo, an expired prefix — would silently be filled with
+ * whatever the current commit built and then served. Failing closed is the only safe
+ * default.
+ *
+ * There is deliberately no "already there, skip" branch. Whether a version is published is
+ * the broker's answer, not something inferred here: it refuses to mint write credentials
+ * for a completed prefix, and the caller turns that refusal into a skip. Inferring it from
+ * a client-side existence check is what let a crashed upload read as deployed.
  */
 function resolveEnsurePlan(opts) {
-    if (opts.targetExists && !opts.force) {
-        return { s3: "skip" };
-    }
-    if (opts.sourceVersion) {
-        if (opts.sourceVersion === opts.targetVersion) {
-            throw new Error(`\`source-version\` and the target version are both "${opts.targetVersion}" — ` +
-                "a version cannot be copied onto itself. Drop `source-version`, or point it at the " +
-                "version the bytes should come from.");
-        }
-        return { s3: "copy", source: opts.sourceVersion };
-    }
     if (opts.folderPresent) {
         return { s3: "upload" };
     }
     if (opts.copyFromCommit && opts.targetVersion !== opts.commitVersion) {
         return { s3: "copy", source: opts.commitVersion };
     }
-    const how = "Provide a `dist-path` to upload, a `source-version` to copy from, or set " +
-        "`copy-from-commit: true` to copy the current commit's already-uploaded build into it " +
-        "(the release flow).";
-    // Reaching here with the target PRESENT means `force` carried us past the
-    // skip branch — saying "is not in S3" would send an operator hunting for a
-    // prefix that is sitting right there.
-    if (opts.targetExists) {
-        throw new Error(`Target version "${opts.targetVersion}" is already in S3, but \`force\` was set and ` +
-            `there is nothing to re-populate it with. ${how} Or drop \`force\` to keep the ` +
-            "existing bytes.");
-    }
     throw new Error(`Target version "${opts.targetVersion}" is not in S3 and there is nothing to populate it ` +
-        `with. ${how} To repoint at an existing version, deploy it first.`);
+        "with. Provide a `dist-path` to upload, or set `copy-from-commit: true` to copy the " +
+        "current commit's already-uploaded build into it (the release flow). To repoint at an " +
+        "existing version, deploy it first.");
 }
 
 

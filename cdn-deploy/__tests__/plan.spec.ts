@@ -4,445 +4,80 @@ type EnsurePlanOpts = Parameters<typeof resolveEnsurePlan>[0];
 
 const COMMIT_VERSION = "1.0.0-commit-abc1234";
 const RELEASE_VERSION = "1.2.3";
-const OTHER_VERSION = "0.9.0-commit-old1234";
-const SELF_COPY_ERROR = "a version cannot be copied onto itself";
 const NOTHING_TO_POPULATE_ERROR = "is not in S3 and there is nothing to populate it with";
-// `force` carries us past the "already present" branch, so the target IS in
-// S3 — the message must not send an operator hunting for a missing prefix.
-const FORCED_NOTHING_TO_REDO_ERROR =
-  "is already in S3, but `force` was set and there is nothing to re-populate it with";
 
-describe("when resolving the S3 ensure plan", () => {
-  describe("and the target version is already present in S3", () => {
-    describe("and force is off", () => {
-      describe("and a dist folder was provided", () => {
-        let opts: EnsurePlanOpts;
+/**
+ * The plan covers the S3 side only; the rollout happens afterwards either way.
+ *
+ * It used to take `targetExists`, `force` and an explicit `sourceVersion`, and had
+ * branches for all three. None of them could do anything:
+ *
+ * - `targetExists` was always false, because the broker refuses to mint write credentials
+ *   for a published version rather than reporting that it exists — so the "already there,
+ *   skip" branch and the "force set but nothing to redo" branch were both unreachable, and
+ *   the tests that covered them drove a state the broker never sends.
+ * - `sourceVersion` could only ever name this run's own commit build: `/release` derives
+ *   the source from the token's sha and refuses anything whose `-commit-<sha7>` suffix
+ *   does not match. That is exactly what `copyFromCommit` computes.
+ *
+ * What is left is the decision that was always actually being made.
+ */
+const opts = (over: Partial<EnsurePlanOpts> = {}): EnsurePlanOpts => ({
+  folderPresent: false,
+  targetVersion: RELEASE_VERSION,
+  commitVersion: COMMIT_VERSION,
+  copyFromCommit: false,
+  ...over,
+});
 
-        beforeEach(() => {
-          opts = {
-            folderPresent: true,
-            targetVersion: COMMIT_VERSION,
-            commitVersion: COMMIT_VERSION,
-            targetExists: true,
-            force: false,
-            copyFromCommit: false,
-          };
-        });
+describe("when a built folder is provided", () => {
+  it("should upload it", () => {
+    expect(resolveEnsurePlan(opts({ folderPresent: true }))).toEqual({ s3: "upload" });
+  });
 
-        it("should skip the S3 work instead of re-uploading the folder", () => {
-          expect(resolveEnsurePlan(opts)).toEqual({ s3: "skip" });
-        });
-      });
-
-      describe("and an explicit source version was provided", () => {
-        let opts: EnsurePlanOpts;
-
-        beforeEach(() => {
-          opts = {
-            folderPresent: false,
-            sourceVersion: OTHER_VERSION,
-            targetVersion: RELEASE_VERSION,
-            commitVersion: COMMIT_VERSION,
-            targetExists: true,
-            force: false,
-            copyFromCommit: false,
-          };
-        });
-
-        it("should skip the S3 work instead of copying from the source version", () => {
-          expect(resolveEnsurePlan(opts)).toEqual({ s3: "skip" });
-        });
-      });
-
-      describe("and copy-from-commit is enabled for a release target", () => {
-        let opts: EnsurePlanOpts;
-
-        beforeEach(() => {
-          opts = {
-            folderPresent: false,
-            targetVersion: RELEASE_VERSION,
-            commitVersion: COMMIT_VERSION,
-            targetExists: true,
-            force: false,
-            copyFromCommit: true,
-          };
-        });
-
-        it("should skip the S3 work instead of copying the commit build", () => {
-          expect(resolveEnsurePlan(opts)).toEqual({ s3: "skip" });
-        });
-      });
-
-      describe("and there is nothing to populate the target with", () => {
-        let opts: EnsurePlanOpts;
-
-        beforeEach(() => {
-          opts = {
-            folderPresent: false,
-            targetVersion: RELEASE_VERSION,
-            commitVersion: COMMIT_VERSION,
-            targetExists: true,
-            force: false,
-            copyFromCommit: false,
-          };
-        });
-
-        it("should skip the S3 work without raising an error", () => {
-          expect(resolveEnsurePlan(opts)).toEqual({ s3: "skip" });
-        });
-      });
-
-      describe("and the source version is the same as the target version", () => {
-        let opts: EnsurePlanOpts;
-
-        beforeEach(() => {
-          opts = {
-            folderPresent: false,
-            sourceVersion: RELEASE_VERSION,
-            targetVersion: RELEASE_VERSION,
-            commitVersion: COMMIT_VERSION,
-            targetExists: true,
-            force: false,
-            copyFromCommit: false,
-          };
-        });
-
-        it("should skip the S3 work without raising the self-copy error", () => {
-          expect(resolveEnsurePlan(opts)).toEqual({ s3: "skip" });
-        });
-      });
+  // The caller built and named those bytes, so they outrank the implicit commit source.
+  it("should upload it even when the release flow is also enabled", () => {
+    expect(resolveEnsurePlan(opts({ folderPresent: true, copyFromCommit: true }))).toEqual({
+      s3: "upload",
     });
+  });
+});
 
-    describe("and force is on", () => {
-      describe("and a dist folder was provided", () => {
-        let opts: EnsurePlanOpts;
-
-        beforeEach(() => {
-          opts = {
-            folderPresent: true,
-            targetVersion: COMMIT_VERSION,
-            commitVersion: COMMIT_VERSION,
-            targetExists: true,
-            force: true,
-            copyFromCommit: false,
-          };
-        });
-
-        it("should re-upload the folder", () => {
-          expect(resolveEnsurePlan(opts)).toEqual({ s3: "upload" });
-        });
-      });
-
-      describe("and an explicit source version was provided", () => {
-        let opts: EnsurePlanOpts;
-
-        beforeEach(() => {
-          opts = {
-            folderPresent: false,
-            sourceVersion: OTHER_VERSION,
-            targetVersion: RELEASE_VERSION,
-            commitVersion: COMMIT_VERSION,
-            targetExists: true,
-            force: true,
-            copyFromCommit: false,
-          };
-        });
-
-        it("should copy from the explicit source version", () => {
-          expect(resolveEnsurePlan(opts)).toEqual({ s3: "copy", source: OTHER_VERSION });
-        });
-      });
-
-      describe("and copy-from-commit is enabled for a release target", () => {
-        let opts: EnsurePlanOpts;
-
-        beforeEach(() => {
-          opts = {
-            folderPresent: false,
-            targetVersion: RELEASE_VERSION,
-            commitVersion: COMMIT_VERSION,
-            targetExists: true,
-            force: true,
-            copyFromCommit: true,
-          };
-        });
-
-        it("should copy from the commit version", () => {
-          expect(resolveEnsurePlan(opts)).toEqual({ s3: "copy", source: COMMIT_VERSION });
-        });
-      });
-
-      describe("and there is nothing to populate the target with", () => {
-        let opts: EnsurePlanOpts;
-
-        beforeEach(() => {
-          opts = {
-            folderPresent: false,
-            targetVersion: RELEASE_VERSION,
-            commitVersion: COMMIT_VERSION,
-            targetExists: true,
-            force: true,
-            copyFromCommit: false,
-          };
-        });
-
-        it("should throw an error naming the target version and the ways to populate it", () => {
-          expect(() => resolveEnsurePlan(opts)).toThrow(FORCED_NOTHING_TO_REDO_ERROR);
-        });
-      });
+describe("when the release flow fills the target", () => {
+  it("should copy the commit's build into it", () => {
+    expect(resolveEnsurePlan(opts({ copyFromCommit: true }))).toEqual({
+      s3: "copy",
+      source: COMMIT_VERSION,
     });
   });
 
-  describe("and the target version is absent from S3", () => {
-    describe("and an explicit source version was provided", () => {
-      describe("and it differs from the target version", () => {
-        describe("and no dist folder was provided", () => {
-          let opts: EnsurePlanOpts;
+  /**
+   * Copying a version onto itself is not a copy. This is the push-build case — the target
+   * IS the commit version — where there is nothing to copy from and nothing to do.
+   */
+  it("should refuse when the target is the commit version itself", () => {
+    expect(() =>
+      resolveEnsurePlan(opts({ copyFromCommit: true, targetVersion: COMMIT_VERSION })),
+    ).toThrow(NOTHING_TO_POPULATE_ERROR);
+  });
+});
 
-          beforeEach(() => {
-            opts = {
-              folderPresent: false,
-              sourceVersion: OTHER_VERSION,
-              targetVersion: RELEASE_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: false,
-            };
-          });
+describe("when there is nothing to populate the target with", () => {
+  /**
+   * The reason `copy-from-commit` is opt-in. "Repoint at version X" and "release-copy into
+   * version X" are the same input shape, so a target that is merely absent — a typo, an
+   * expired prefix — must fail rather than be filled with whatever this commit built and
+   * then served.
+   */
+  it("should refuse rather than guess", () => {
+    expect(() => resolveEnsurePlan(opts())).toThrow(NOTHING_TO_POPULATE_ERROR);
+  });
 
-          it("should copy from the explicit source version", () => {
-            expect(resolveEnsurePlan(opts)).toEqual({ s3: "copy", source: OTHER_VERSION });
-          });
-        });
+  it("should name the version it could not fill", () => {
+    expect(() => resolveEnsurePlan(opts())).toThrow(RELEASE_VERSION);
+  });
 
-        describe("and a dist folder was also provided", () => {
-          let opts: EnsurePlanOpts;
-
-          beforeEach(() => {
-            opts = {
-              folderPresent: true,
-              sourceVersion: OTHER_VERSION,
-              targetVersion: RELEASE_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: false,
-            };
-          });
-
-          it("should copy from the explicit source version instead of uploading the folder", () => {
-            expect(resolveEnsurePlan(opts)).toEqual({ s3: "copy", source: OTHER_VERSION });
-          });
-        });
-
-        describe("and copy-from-commit is also enabled", () => {
-          let opts: EnsurePlanOpts;
-
-          beforeEach(() => {
-            opts = {
-              folderPresent: false,
-              sourceVersion: OTHER_VERSION,
-              targetVersion: RELEASE_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: true,
-            };
-          });
-
-          it("should copy from the explicit source version instead of the commit version", () => {
-            expect(resolveEnsurePlan(opts)).toEqual({ s3: "copy", source: OTHER_VERSION });
-          });
-        });
-      });
-
-      describe("and it is the same as the target version", () => {
-        describe("and no dist folder was provided", () => {
-          let opts: EnsurePlanOpts;
-
-          beforeEach(() => {
-            opts = {
-              folderPresent: false,
-              sourceVersion: RELEASE_VERSION,
-              targetVersion: RELEASE_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: false,
-            };
-          });
-
-          it("should throw an error stating a version cannot be copied onto itself", () => {
-            expect(() => resolveEnsurePlan(opts)).toThrow(SELF_COPY_ERROR);
-          });
-        });
-
-        describe("and a dist folder was also provided", () => {
-          let opts: EnsurePlanOpts;
-
-          beforeEach(() => {
-            opts = {
-              folderPresent: true,
-              sourceVersion: RELEASE_VERSION,
-              targetVersion: RELEASE_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: false,
-            };
-          });
-
-          it("should throw the self-copy error instead of falling back to uploading the folder", () => {
-            expect(() => resolveEnsurePlan(opts)).toThrow(SELF_COPY_ERROR);
-          });
-        });
-      });
-    });
-
-    describe("and a dist folder was provided without an explicit source version", () => {
-      describe("and the target version is the commit version", () => {
-        let opts: EnsurePlanOpts;
-
-        beforeEach(() => {
-          opts = {
-            folderPresent: true,
-            targetVersion: COMMIT_VERSION,
-            commitVersion: COMMIT_VERSION,
-            targetExists: false,
-            force: false,
-            copyFromCommit: false,
-          };
-        });
-
-        it("should upload the folder", () => {
-          expect(resolveEnsurePlan(opts)).toEqual({ s3: "upload" });
-        });
-      });
-
-      describe("and the target version differs from the commit version", () => {
-        describe("and copy-from-commit is disabled", () => {
-          let opts: EnsurePlanOpts;
-
-          beforeEach(() => {
-            opts = {
-              folderPresent: true,
-              targetVersion: RELEASE_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: false,
-            };
-          });
-
-          it("should upload the folder rather than discarding it", () => {
-            expect(resolveEnsurePlan(opts)).toEqual({ s3: "upload" });
-          });
-        });
-
-        describe("and copy-from-commit is enabled", () => {
-          let opts: EnsurePlanOpts;
-
-          beforeEach(() => {
-            opts = {
-              folderPresent: true,
-              targetVersion: RELEASE_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: true,
-            };
-          });
-
-          it("should upload the folder rather than copying the commit version over it", () => {
-            expect(resolveEnsurePlan(opts)).toEqual({ s3: "upload" });
-          });
-        });
-      });
-    });
-
-    describe("and neither a dist folder nor a source version was provided", () => {
-      describe("and copy-from-commit is enabled", () => {
-        describe("and the target version differs from the commit version", () => {
-          let opts: EnsurePlanOpts;
-
-          beforeEach(() => {
-            opts = {
-              folderPresent: false,
-              targetVersion: RELEASE_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: true,
-            };
-          });
-
-          it("should copy from the commit version", () => {
-            expect(resolveEnsurePlan(opts)).toEqual({ s3: "copy", source: COMMIT_VERSION });
-          });
-        });
-
-        describe("and the target version is the commit version", () => {
-          let opts: EnsurePlanOpts;
-
-          beforeEach(() => {
-            opts = {
-              folderPresent: false,
-              targetVersion: COMMIT_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: true,
-            };
-          });
-
-          it("should throw instead of copying the commit version onto itself", () => {
-            expect(() => resolveEnsurePlan(opts)).toThrow(NOTHING_TO_POPULATE_ERROR);
-          });
-        });
-      });
-
-      describe("and copy-from-commit is disabled", () => {
-        describe("and the target version differs from the commit version", () => {
-          let opts: EnsurePlanOpts;
-
-          beforeEach(() => {
-            opts = {
-              folderPresent: false,
-              targetVersion: RELEASE_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: false,
-            };
-          });
-
-          it("should throw instead of silently copying the current commit's build", () => {
-            expect(() => resolveEnsurePlan(opts)).toThrow(NOTHING_TO_POPULATE_ERROR);
-          });
-        });
-
-        describe("and the target version is the commit version", () => {
-          let opts: EnsurePlanOpts;
-
-          beforeEach(() => {
-            opts = {
-              folderPresent: false,
-              targetVersion: COMMIT_VERSION,
-              commitVersion: COMMIT_VERSION,
-              targetExists: false,
-              force: false,
-              copyFromCommit: false,
-            };
-          });
-
-          it("should throw an error naming the missing target version", () => {
-            expect(() => resolveEnsurePlan(opts)).toThrow(
-              'Target version "1.0.0-commit-abc1234" is not in S3',
-            );
-          });
-        });
-      });
-    });
+  it("should say what would have filled it", () => {
+    expect(() => resolveEnsurePlan(opts())).toThrow(/dist-path.*copy-from-commit/s);
   });
 });

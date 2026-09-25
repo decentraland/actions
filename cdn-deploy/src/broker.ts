@@ -23,7 +23,6 @@ export type CredentialsGrant = {
   region: string;
   prefix: string;
   /** Whether a completed upload already exists for this version. */
-  targetExists: boolean;
   credentials: BrokerCredentials;
   expiresInSeconds: number;
 };

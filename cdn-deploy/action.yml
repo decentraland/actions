@@ -8,9 +8,6 @@ inputs:
   dist-path:
     description: "Path to the pre-built site directory to upload (e.g. ./dist). The caller builds it. Must be a directory inside the workspace. Required for a normal deploy; omit for a release copy (`copy-from-commit`) or a repoint."
     required: false
-  source-version:
-    description: "Explicit version in S3 to copy FROM. Outranks `dist-path`: set it only when you mean to copy already-uploaded bytes rather than publish the folder."
-    required: false
   copy-from-commit:
     description: "Release flow: when the target `version` is not yet in S3, fill it by copying the current commit's already-uploaded build. Off by default, so a `version` that is simply absent fails instead of being silently filled with whatever this commit built."
     required: false
@@ -27,11 +24,8 @@ inputs:
   deployment-environments:
     description: 'Environments to repoint, as a JSON array or comma list (e.g. ''["zone"]''). Empty array ''[]'' stages the bytes in S3 without touching any KV. Defaults to zone only — staging and production are promoted deliberately from a job that declares a GitHub environment. Mutually exclusive with `deployment-environment`.'
     required: false
-  deployment-environment:
-    description: "Single-environment shorthand for `deployment-environments` (e.g. `org`)."
-    required: false
   force:
-    description: "Re-upload / re-copy the bytes even when the target version is already in S3."
+    description: "Fail instead of skipping when the target version is already published. Nothing can overwrite a published version — the broker refuses — so this turns a silent 'already there' into a loud error for a run that meant to write new bytes."
     required: false
     default: "false"
   deployment-name:
@@ -89,13 +83,11 @@ runs:
       run: node "$GITHUB_ACTION_PATH/dist/index.js"
       env:
         INPUT_DIST-PATH: ${{ inputs.dist-path }}
-        INPUT_SOURCE-VERSION: ${{ inputs.source-version }}
         INPUT_COPY-FROM-COMMIT: ${{ inputs.copy-from-commit }}
         INPUT_COMMIT: ${{ inputs.commit }}
         INPUT_PACKAGE-NAME: ${{ inputs.package-name }}
         INPUT_BASE-VERSION: ${{ inputs.base-version }}
         INPUT_DEPLOYMENT-ENVIRONMENTS: ${{ inputs.deployment-environments }}
-        INPUT_DEPLOYMENT-ENVIRONMENT: ${{ inputs.deployment-environment }}
         INPUT_DEPLOYMENT-NAME: ${{ inputs.deployment-name }}
         INPUT_PERCENTAGE: ${{ inputs.percentage }}
         INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}

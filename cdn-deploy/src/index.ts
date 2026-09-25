@@ -61,15 +61,15 @@ async function run(): Promise<void> {
     // A pure repoint writes nothing, so it needs no credentials — and asking for them would
     // make a rollback depend on STS. Whether the bytes are really there is checked
     // authoritatively by the broker before it touches the rollout record.
-    const hasBytesToWrite = !!(inputs.distPath || inputs.sourceVersion || inputs.copyFromCommit);
+    const hasBytesToWrite = !!(inputs.distPath || inputs.copyFromCommit);
 
     // `force` means "redo the upload or copy", so on a run with nothing to redo it is a
     // mistake rather than a modifier. Caught here, before a 15-minute write session is
     // minted for work that cannot happen.
     if (inputs.force && !hasBytesToWrite) {
       throw new Error(
-        "`force` was set, but this run has no bytes to write: pass `dist-path`, `source-version` " +
-          "or `copy-from-commit`. To repoint an environment at a version already in S3, drop `force`.",
+        "`force` was set, but this run has no bytes to write: pass `dist-path` or " +
+          "`copy-from-commit`. To repoint an environment at a version already in S3, drop `force`.",
       );
     }
 
@@ -86,15 +86,12 @@ async function run(): Promise<void> {
       // production serves, in place, with no rollout call and nothing to approve, which is
       // precisely what the immutability freeze exists to stop.
       //
-      // `targetExists` is false because the broker no longer reports it: it refuses to
-      // mint for a published version instead, and that refusal is handled below.
+      // There is no "is it already there?" input: the broker refuses to mint for a
+      // published version, and that refusal is handled below.
       const plan = resolveEnsurePlan({
         folderPresent: !!inputs.distPath,
-        sourceVersion: inputs.sourceVersion,
         targetVersion,
         commitVersion,
-        targetExists: false,
-        force: inputs.force,
         copyFromCommit: inputs.copyFromCommit,
       });
 

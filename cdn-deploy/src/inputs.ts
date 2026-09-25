@@ -303,34 +303,14 @@ export function readInputs(): ActionInputs {
     );
   }
 
-  // environments: explicit plural > singular sugar > default [zone, today].
-  const envPlural = core.getInput("deployment-environments");
-  const envSingular = core.getInput("deployment-environment");
-  if (envPlural !== "" && envSingular !== "") {
-    throw new Error(
-      "Provide either `deployment-environments` or `deployment-environment`, not both.",
-    );
-  }
-  let environments: Environment[];
-  if (envPlural !== "")
-    environments = parseEnvironments(envPlural); // may be [] (stage)
-  else if (envSingular !== "") environments = [asEnvironment(envSingular)];
-  else environments = DEFAULT_ENVIRONMENTS;
+  // `deployment-environments` already accepts a bare name, a comma list or a JSON array,
+  // so `org` and `["zone","today"]` are both valid and a separate singular input bought
+  // nothing but a way to set two inputs that disagree.
+  const envInput = core.getInput("deployment-environments");
+  const environments: Environment[] =
+    envInput !== "" ? parseEnvironments(envInput) : DEFAULT_ENVIRONMENTS; // may be [] (stage)
 
   const version = core.getInput("version") || undefined;
-  const sourceVersion = core.getInput("source-version") || undefined;
-  if (distPath && sourceVersion) {
-    throw new Error(
-      "Provide either `dist-path` (publish these bytes) or `source-version` (copy bytes already " +
-        "in S3), not both — otherwise the folder you built would be silently discarded.",
-    );
-  }
-  if (version && sourceVersion && version === sourceVersion) {
-    throw new Error(
-      `\`version\` and \`source-version\` are both "${version}" — a version cannot be copied ` +
-        "onto itself.",
-    );
-  }
 
   return {
     distPath,
@@ -340,7 +320,6 @@ export function readInputs(): ActionInputs {
     deploymentName: core.getInput("deployment-name") || DEFAULT_ROLLOUT_NAME,
     percentage: parsePercentage(core.getInput("percentage")),
     version,
-    sourceVersion,
     commit: core.getInput("commit") || undefined,
     requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
     force: parseBooleanInput(core.getInput("force"), false, "force"),

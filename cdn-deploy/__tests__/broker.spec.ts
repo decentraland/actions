@@ -35,7 +35,6 @@ describe("when calling the deploy broker", () => {
       bucket: "cdn-bucket",
       region: "us-east-1",
       prefix: "@dcl/auth-site/1.0.0/",
-      targetExists: false,
       credentials: { accessKeyId: "AKIA", secretAccessKey: "s", sessionToken: "t" },
       expiresInSeconds: 900,
     };
@@ -237,7 +236,6 @@ describe("when a credentials grant comes back", () => {
         bucket: "cdn-bucket",
         region: "us-east-1",
         prefix: "@dcl/auth-site/1.0.0/",
-        targetExists: false,
         expiresInSeconds: 900,
         credentials: {
           accessKeyId: "AKIA-TEST",

@@ -63,12 +63,11 @@ describe("when running the cdn-deploy action", () => {
     };
   }
 
-  function grant(targetExists: boolean) {
+  function grant() {
     return {
       bucket: "cdn-test-bucket",
       region: "us-east-1",
       prefix: `${PACKAGE_NAME}/${COMMIT_VERSION}/`,
-      targetExists,
       credentials: { accessKeyId: "AKIA", secretAccessKey: "s", sessionToken: "t" },
       expiresInSeconds: 900,
     };
@@ -140,7 +139,7 @@ describe("when running the cdn-deploy action", () => {
       inputs = buildInputs({ distPath: "./dist" });
       readInputsMock.mockReturnValue(inputs);
       folderHasIndexHtmlMock.mockReturnValue(true);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
     });
 
@@ -272,9 +271,9 @@ describe("when running the cdn-deploy action", () => {
   describe("and the same commit is deployed again", () => {
     /**
      * Driven by the broker's refusal, which is the only way this is signalled. It used to
-     * be driven by a grant carrying `targetExists: true` — a value the broker hardcodes to
-     * false and never sends, so the test passed against a state that cannot occur while
-     * the real redeploy path went unexercised here.
+     * be driven by a grant carrying `targetExists: true` — a value the broker never sent,
+     * so the test passed against a state that cannot occur while the real redeploy path
+     * went unexercised here. That field is gone from the wire entirely now.
      */
     beforeEach(() => {
       inputs = buildInputs({ distPath: "./dist" });
@@ -308,7 +307,7 @@ describe("when running the cdn-deploy action", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       broker.release.mockResolvedValue({ complete: true, copied: 12, objectCount: 12 });
     });
 
@@ -343,7 +342,7 @@ describe("when running the cdn-deploy action", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       broker.release
         .mockResolvedValueOnce({ complete: false, copied: 640, continuation: "tok-1" })
         .mockResolvedValueOnce({ complete: false, copied: 1280, continuation: "tok-2" })
@@ -370,7 +369,7 @@ describe("when running the cdn-deploy action", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       // retryAfter 0 keeps the test fast; what is under test is that it waits and retries
       // rather than failing, not how long it waits.
       broker.release
@@ -403,7 +402,7 @@ describe("when running the cdn-deploy action", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       // Same token, same count: it is not getting anywhere.
       broker.release.mockResolvedValue({ complete: false, copied: 640, continuation: "stuck" });
     });
@@ -423,7 +422,7 @@ describe("when running the cdn-deploy action", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       broker.release.mockResolvedValue({ complete: false, copied: 1 });
     });
 
@@ -449,7 +448,7 @@ describe("when running the cdn-deploy action", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       // One copy attempt allowed. If waits were counted against it — as they were — two
       // of them would exhaust the budget before the copy is ever tried. At the real cap of
       // 300 this distinction is invisible, which is why the cap is lowered here.
@@ -481,7 +480,7 @@ describe("when running the cdn-deploy action", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       RELEASE_LIMITS.maxCalls = 4;
       let copied = 0;
       // Always progressing, so the stall detector never fires and only the call cap can
@@ -516,7 +515,7 @@ describe("when running the cdn-deploy action", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       broker.release.mockRejectedValue(
         new BrokerError("source_not_ready", 409, "still uploading", {}, 0),
       );
@@ -631,7 +630,7 @@ describe("when running the cdn-deploy action", () => {
     beforeEach(() => {
       inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
       readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       broker.release.mockRejectedValue(
         new BrokerError("version_tag_mismatch", 403, "not your tag", {}),
       );
@@ -653,7 +652,7 @@ describe("when running the cdn-deploy action", () => {
       inputs = buildInputs({ distPath: "./dist" });
       readInputsMock.mockReturnValue(inputs);
       folderHasIndexHtmlMock.mockReturnValue(true);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
     });
 
@@ -673,7 +672,7 @@ describe("when running the cdn-deploy action", () => {
 
       const options = (createBrokeredCredentials as jest.Mock).mock.calls[0][0];
 
-      await expect(options.fetchGrant()).resolves.toEqual(grant(false).credentials);
+      await expect(options.fetchGrant()).resolves.toEqual(grant().credentials);
     });
   });
 
@@ -703,7 +702,7 @@ describe("when running the cdn-deploy action", () => {
       inputs = buildInputs({ distPath: "./dist" });
       readInputsMock.mockReturnValue(inputs);
       folderHasIndexHtmlMock.mockReturnValue(true);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       uploadFolderToS3Mock.mockResolvedValue([]);
     });
 
@@ -743,7 +742,7 @@ describe("when running the cdn-deploy action", () => {
       inputs = buildInputs({ distPath: "./dist", requireIndex: false });
       readInputsMock.mockReturnValue(inputs);
       folderHasIndexHtmlMock.mockReturnValue(false);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       uploadFolderToS3Mock.mockResolvedValue(["bundle.js"]);
     });
 
@@ -759,7 +758,7 @@ describe("when running the cdn-deploy action", () => {
       inputs = buildInputs({ distPath: "./dist" });
       readInputsMock.mockReturnValue(inputs);
       folderHasIndexHtmlMock.mockReturnValue(true);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
       broker.rollout.mockImplementation(async ({ environment }: { environment: string }) => {
         if (environment === "today") throw new Error("kv unavailable");
@@ -789,7 +788,7 @@ describe("when running the cdn-deploy action", () => {
       inputs = buildInputs({ distPath: "./dist" });
       readInputsMock.mockReturnValue(inputs);
       folderHasIndexHtmlMock.mockReturnValue(true);
-      broker.requestCredentials.mockResolvedValue(grant(false));
+      broker.requestCredentials.mockResolvedValue(grant());
       uploadFolderToS3Mock.mockResolvedValue(["index.html"]);
     });
 

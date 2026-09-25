@@ -31,7 +31,6 @@ export type ActionInputs = {
   /** Explicit target version (e.g. a release tag). Defaults to the commit version. */
   version?: string;
   /** Explicit version to copy from. Outranks everything but an already-present target. */
-  sourceVersion?: string;
   /** Commit sha to compute the version from (manual deploy by commit). Defaults to GITHUB_SHA. */
   commit?: string;
   /** Fail a deploy if the folder has no index.html at its root (default true). */
