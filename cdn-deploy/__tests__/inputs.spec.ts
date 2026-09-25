@@ -184,7 +184,7 @@ describe("when validating a package name", () => {
 
   describe("and the name contains uppercase characters", () => {
     // S3 keys are case-sensitive, so an upper-case name deploys to a prefix
-    // the worker never serves and prefixExists can never match.
+    // the worker never serves and the broker's completion check can never match.
     it("should reject it", () => {
       expect(() => validatePackageName("Explorer")).toThrow("Invalid package name");
     });

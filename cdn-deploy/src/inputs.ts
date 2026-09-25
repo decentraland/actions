@@ -61,7 +61,8 @@ export function validatePackageName(packageName: string): string {
     );
   }
   // Lower-case only: S3 keys are case-sensitive, so `@DCL/Auth` would deploy to
-  // a prefix the worker never serves and that `prefixExists` can never match.
+  // a prefix the worker never serves and that the broker's completion check can
+  // never match.
   if (!PACKAGE_NAME_RE.test(packageName)) {
     throw new Error(
       `Invalid package name "${packageName}". Expected an npm package name (optionally ` +
