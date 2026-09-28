@@ -23,7 +23,7 @@ export type ActionInputs = {
   /** Pre-built directory to upload (deploy). Empty for copy/repoint flows. */
   distPath: string;
   packageName: string;
-  baseVersion: string;
+  baseVersion?: string;
   /** Environments whose KV gets repointed. Empty = stage only (S3, no KV). */
   environments: Environment[];
   deploymentName: string;

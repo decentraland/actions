@@ -294,14 +294,10 @@ export function readInputs(): ActionInputs {
   }
   const packageName = validatePackageName(packageNameInput);
 
-  const baseVersion = core.getInput("base-version") || pkg.version;
-  if (!baseVersion) {
-    throw new Error(
-      "Unable to resolve the base version. The repo-root package.json has no `version` — check " +
-        "the repository out in the deploy job, or set the `base-version` input. (This used to " +
-        "fall back to 0.0.0, which produced a version nobody serves.)",
-    );
-  }
+  // Optional here, demanded where it is actually used. A promotion supplies `version` and
+  // runs with no checkout — nothing to build, the bytes are already in S3 — so throwing
+  // here refused a job that never needed a base version at all.
+  const baseVersion = core.getInput("base-version") || pkg.version || undefined;
 
   // `deployment-environments` already accepts a bare name, a comma list or a JSON array,
   // so `org` and `["zone","today"]` are both valid and a separate singular input bought

@@ -801,9 +801,15 @@ describe("when reading the action inputs", () => {
       );
     });
 
+    /**
+     * Reading the inputs must not demand it. A promotion supplies `version` and checks
+     * nothing out, so it has no package.json and needs no base version — refusing here
+     * killed that job before it reached the broker. The demand lives where a commit
+     * version is actually computed; see index.spec.
+     */
     describe("and no base-version input is provided", () => {
-      it("should throw instead of silently using 0.0.0", () => {
-        expect(() => readInputs()).toThrow("Unable to resolve the base version");
+      it("should not throw, and should leave the base version unresolved", () => {
+        expect(readInputs().baseVersion).toBeUndefined();
       });
     });
 

@@ -17,8 +17,22 @@ async function run(): Promise<void> {
   // the dev-deployed bytes. `commit` lets a manual deploy target a specific commit's build;
   // otherwise it's the workflow's commit.
   const sha = inputs.commit || github.context.sha;
-  const commitVersion = computeVersion({ baseVersion: inputs.baseVersion, sha });
-  const targetVersion = inputs.version || commitVersion;
+
+  // Lazy, deliberately. Computing it eagerly meant every run had to resolve a base
+  // version, including a promotion that supplies `version` and checks nothing out — which
+  // died in readInputs before it ever reached the broker.
+  const commitVersion = (): string => {
+    if (!inputs.baseVersion) {
+      throw new Error(
+        "Unable to resolve the base version. The repo-root package.json has no `version` — check " +
+          "the repository out in this job, or set the `base-version` input. Only a run that has to " +
+          "compute a commit version needs it: pass `version` to deploy or repoint a known one.",
+      );
+    }
+    return computeVersion({ baseVersion: inputs.baseVersion, sha });
+  };
+
+  const targetVersion = inputs.version || commitVersion();
 
   const remoteFolder = `${packageName}/${targetVersion}`;
   const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${targetVersion}`;
@@ -29,7 +43,7 @@ async function run(): Promise<void> {
   core.setOutput("cdn-url", cdnUrl);
 
   core.info(`package:      ${packageName}`);
-  core.info(`version:      ${targetVersion}${targetVersion === commitVersion ? " (commit)" : ""}`);
+  core.info(`version:      ${targetVersion}${inputs.version ? "" : " (commit)"}`);
   core.info(`environments: ${envs.length ? envs.join(", ") : "(stage only — no rollout)"}`);
   core.info(`cdn url:      ${cdnUrl}`);
   core.info(`broker:       ${inputs.brokerUrl}`);
@@ -91,7 +105,8 @@ async function run(): Promise<void> {
       const plan = resolveEnsurePlan({
         folderPresent: !!inputs.distPath,
         targetVersion,
-        commitVersion,
+        // Only the copy path reads this, and only that path needs a base version.
+        commitVersion: inputs.copyFromCommit ? commitVersion() : undefined,
         copyFromCommit: inputs.copyFromCommit,
       });
 

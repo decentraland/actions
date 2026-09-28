@@ -78271,8 +78271,18 @@ async function run() {
     // the dev-deployed bytes. `commit` lets a manual deploy target a specific commit's build;
     // otherwise it's the workflow's commit.
     const sha = inputs.commit || github.context.sha;
-    const commitVersion = (0, version_1.computeVersion)({ baseVersion: inputs.baseVersion, sha });
-    const targetVersion = inputs.version || commitVersion;
+    // Lazy, deliberately. Computing it eagerly meant every run had to resolve a base
+    // version, including a promotion that supplies `version` and checks nothing out — which
+    // died in readInputs before it ever reached the broker.
+    const commitVersion = () => {
+        if (!inputs.baseVersion) {
+            throw new Error("Unable to resolve the base version. The repo-root package.json has no `version` — check " +
+                "the repository out in this job, or set the `base-version` input. Only a run that has to " +
+                "compute a commit version needs it: pass `version` to deploy or repoint a known one.");
+        }
+        return (0, version_1.computeVersion)({ baseVersion: inputs.baseVersion, sha });
+    };
+    const targetVersion = inputs.version || commitVersion();
     const remoteFolder = `${packageName}/${targetVersion}`;
     const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${targetVersion}`;
     const envs = inputs.environments;
@@ -78280,7 +78290,7 @@ async function run() {
     core.setOutput("s3-path", remoteFolder);
     core.setOutput("cdn-url", cdnUrl);
     core.info(`package:      ${packageName}`);
-    core.info(`version:      ${targetVersion}${targetVersion === commitVersion ? " (commit)" : ""}`);
+    core.info(`version:      ${targetVersion}${inputs.version ? "" : " (commit)"}`);
     core.info(`environments: ${envs.length ? envs.join(", ") : "(stage only — no rollout)"}`);
     core.info(`cdn url:      ${cdnUrl}`);
     core.info(`broker:       ${inputs.brokerUrl}`);
@@ -78331,7 +78341,8 @@ async function run() {
             const plan = (0, plan_1.resolveEnsurePlan)({
                 folderPresent: !!inputs.distPath,
                 targetVersion,
-                commitVersion,
+                // Only the copy path reads this, and only that path needs a base version.
+                commitVersion: inputs.copyFromCommit ? commitVersion() : undefined,
                 copyFromCommit: inputs.copyFromCommit,
             });
             // A published version is immutable, and the broker refuses to write one rather than
@@ -78960,12 +78971,10 @@ function readInputs() {
             'out so the repo-root package.json (with its "name") is available.');
     }
     const packageName = validatePackageName(packageNameInput);
-    const baseVersion = core.getInput("base-version") || pkg.version;
-    if (!baseVersion) {
-        throw new Error("Unable to resolve the base version. The repo-root package.json has no `version` — check " +
-            "the repository out in the deploy job, or set the `base-version` input. (This used to " +
-            "fall back to 0.0.0, which produced a version nobody serves.)");
-    }
+    // Optional here, demanded where it is actually used. A promotion supplies `version` and
+    // runs with no checkout — nothing to build, the bytes are already in S3 — so throwing
+    // here refused a job that never needed a base version at all.
+    const baseVersion = core.getInput("base-version") || pkg.version || undefined;
     // `deployment-environments` already accepts a bare name, a comma list or a JSON array,
     // so `org` and `["zone","today"]` are both valid and a separate singular input bought
     // nothing but a way to set two inputs that disagree.
@@ -79029,7 +79038,7 @@ function resolveEnsurePlan(opts) {
     if (opts.folderPresent) {
         return { s3: "upload" };
     }
-    if (opts.copyFromCommit && opts.targetVersion !== opts.commitVersion) {
+    if (opts.copyFromCommit && opts.commitVersion && opts.targetVersion !== opts.commitVersion) {
         return { s3: "copy", source: opts.commitVersion };
     }
     throw new Error(`Target version "${opts.targetVersion}" is not in S3 and there is nothing to populate it ` +

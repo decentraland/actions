@@ -27,14 +27,15 @@ import { EnsurePlan } from "./types";
 export function resolveEnsurePlan(opts: {
   folderPresent: boolean;
   targetVersion: string;
-  commitVersion: string;
+  /** Absent when the caller had no base version to compute one from. */
+  commitVersion?: string;
   copyFromCommit: boolean;
 }): EnsurePlan {
   if (opts.folderPresent) {
     return { s3: "upload" };
   }
 
-  if (opts.copyFromCommit && opts.targetVersion !== opts.commitVersion) {
+  if (opts.copyFromCommit && opts.commitVersion && opts.targetVersion !== opts.commitVersion) {
     return { s3: "copy", source: opts.commitVersion };
   }
 

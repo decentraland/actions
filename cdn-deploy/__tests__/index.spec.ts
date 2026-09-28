@@ -221,6 +221,56 @@ describe("when running the cdn-deploy action", () => {
     });
   });
 
+  describe("and a promotion runs with no checkout", () => {
+    /**
+     * The shape of the promote job: a version to put live, no dist-path, no checkout — so
+     * no package.json and no base version. The commit version is never used, and demanding
+     * one up front killed the job in readInputs before it ever reached the broker, taking
+     * promotion to today/org and rollback with it.
+     */
+    beforeEach(() => {
+      inputs = buildInputs({
+        version: "8.36.0",
+        baseVersion: undefined,
+        distPath: "",
+        environments: ["org"],
+      });
+      readInputsMock.mockReturnValue(inputs);
+    });
+
+    it("should roll out without needing a base version", async () => {
+      await run();
+
+      expect(broker.rollout).toHaveBeenCalledTimes(1);
+    });
+
+    it("should roll out the version it was given", async () => {
+      await run();
+
+      expect(broker.rollout.mock.calls[0][0]).toMatchObject({ version: "8.36.0" });
+    });
+
+    it("should write nothing to S3", async () => {
+      await run();
+
+      expect(broker.requestCredentials).not.toHaveBeenCalled();
+      expect(broker.release).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("and a commit version is needed but no base version resolves", () => {
+    // The demand did not disappear, it moved: a run that must compute a commit version
+    // still fails, and still says how to fix it.
+    beforeEach(() => {
+      inputs = buildInputs({ distPath: "./dist", baseVersion: undefined, environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+    });
+
+    it("should fail naming the base version", async () => {
+      await expect(run()).rejects.toThrow("Unable to resolve the base version");
+    });
+  });
+
   describe("and a release copies a commit build into the tag", () => {
     /**
      * The release path must not hold a write session over the prefix it is publishing.
