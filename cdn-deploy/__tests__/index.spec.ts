@@ -17,7 +17,7 @@ jest.mock("@actions/core", () => ({
   setSecret: jest.fn(),
   summary: { addHeading: jest.fn(), addTable: jest.fn(), write: jest.fn() },
 }));
-jest.mock("@actions/github", () => ({ context: { sha: "" } }));
+jest.mock("@actions/github", () => ({ context: { sha: "", runId: 4242 } }));
 jest.mock("../src/inputs", () => ({
   ...jest.requireActual("../src/inputs"),
   readInputs: jest.fn(),
@@ -41,12 +41,13 @@ describe("when running the cdn-deploy action", () => {
   const WORKFLOW_SHA = "abc1234def5678901234567890abcdef12345678";
   const COMMIT_INPUT_SHA = "feed1234567890abcdef1234567890abcdef1234";
   const PACKAGE_NAME = "@dcl/auth-site";
-  const COMMIT_VERSION = "1.0.0-commit-abc1234";
+  const COMMIT_VERSION = "1.0.0-4242.commit-abc1234";
   const RELEASE_VERSION = "1.2.3";
 
   function buildInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
     return {
-      distPath: "",
+      resolveVersionOnly: false,
+    distPath: "",
       packageName: PACKAGE_NAME,
       baseVersion: "1.0.0",
       environments: ["zone", "today"],
@@ -267,7 +268,7 @@ describe("when running the cdn-deploy action", () => {
     });
 
     it("should fail naming the base version", async () => {
-      await expect(run()).rejects.toThrow("Unable to resolve the base version");
+      await expect(run()).rejects.toThrow("Unable to resolve a base version");
     });
   });
 
@@ -897,7 +898,7 @@ describe("when running the cdn-deploy action", () => {
       await run();
 
       expect(createObservabilityMock).toHaveBeenCalledWith(
-        expect.objectContaining({ sha: COMMIT_INPUT_SHA, version: "1.0.0-commit-feed123" }),
+        expect.objectContaining({ sha: COMMIT_INPUT_SHA, version: "1.0.0-4242.commit-feed123" }),
       );
     });
   });

@@ -722,8 +722,15 @@ describe("when reading the action inputs", () => {
       expect(result.packageName).toBe("@dcl/auth-site");
     });
 
-    it("should read the base version from the repo-root package.json", () => {
-      expect(result.baseVersion).toBe("1.2.3");
+    // package.json is a FLOOR now, not the base, so it is reported separately from an
+    // explicit `base-version` input. Collapsing the two is what let a stale package.json
+    // silently decide the version.
+    it("should read the package version from the repo-root package.json", () => {
+      expect(result.packageVersion).toBe("1.2.3");
+    });
+
+    it("should leave the base version unset when the input is absent", () => {
+      expect(result.baseVersion).toBeUndefined();
     });
   });
 

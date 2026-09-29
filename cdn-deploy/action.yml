@@ -55,6 +55,10 @@ inputs:
     description: "Audience requested on the GitHub OIDC token. Must match what the broker expects; the calling job needs `permissions: { id-token: write }`."
     required: false
     default: "dcl-cdn-deploy"
+  resolve-version-only:
+    description: "Resolve the version, set the outputs and stop. Nothing is uploaded or rolled out. For workflows that must know the version BEFORE building, because the build bakes the asset base URL from it."
+    required: false
+    default: "false"
   cdn-base-url:
     description: "CDN origin used to compute the cdn-url output."
     required: false
@@ -93,6 +97,7 @@ runs:
         INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}
         INPUT_FORCE: ${{ inputs.force }}
         INPUT_VERSION: ${{ inputs.version }}
+        INPUT_RESOLVE-VERSION-ONLY: ${{ inputs.resolve-version-only }}
         INPUT_BROKER-URL: ${{ inputs.broker-url }}
         INPUT_OIDC-AUDIENCE: ${{ inputs.oidc-audience }}
         INPUT_CREATE-GITHUB-DEPLOYMENT: ${{ inputs.create-github-deployment }}

@@ -297,7 +297,13 @@ export function readInputs(): ActionInputs {
   // Optional here, demanded where it is actually used. A promotion supplies `version` and
   // runs with no checkout — nothing to build, the bytes are already in S3 — so throwing
   // here refused a job that never needed a base version at all.
-  const baseVersion = core.getInput("base-version") || pkg.version || undefined;
+  //
+  // The two are kept apart on purpose. `base-version` is a deliberate override and wins
+  // outright; package.json is only a FLOOR, because the newest release is the real anchor.
+  // Collapsing them is what let `@dcl/sites` build `0.0.1-…` while serving 0.69.x — its
+  // package.json had been stale for 69 minor versions, and nothing read it until now.
+  const baseVersion = core.getInput("base-version") || undefined;
+  const packageVersion = pkg.version || undefined;
 
   // `deployment-environments` already accepts a bare name, a comma list or a JSON array,
   // so `org` and `["zone","today"]` are both valid and a separate singular input bought
@@ -312,6 +318,7 @@ export function readInputs(): ActionInputs {
     distPath,
     packageName,
     baseVersion,
+    packageVersion,
     environments,
     deploymentName: core.getInput("deployment-name") || DEFAULT_ROLLOUT_NAME,
     percentage: parsePercentage(core.getInput("percentage")),
@@ -320,6 +327,11 @@ export function readInputs(): ActionInputs {
     requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
     force: parseBooleanInput(core.getInput("force"), false, "force"),
     copyFromCommit: parseBooleanInput(core.getInput("copy-from-commit"), false, "copy-from-commit"),
+    resolveVersionOnly: parseBooleanInput(
+      core.getInput("resolve-version-only"),
+      false,
+      "resolve-version-only",
+    ),
     createGithubDeployment: parseBooleanInput(
       core.getInput("create-github-deployment"),
       true,

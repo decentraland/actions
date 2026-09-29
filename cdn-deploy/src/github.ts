@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
+import * as semver from "semver";
 import { Environment } from "./types";
 
 /**
@@ -149,4 +150,60 @@ export function createObservability(opts: {
       await commitStatus("failure", "Failed to deploy to CDN");
     },
   };
+}
+
+/**
+ * The newest published release of this repository, as a semver string.
+ *
+ * This is what replaces oddish's npm dist-tag lookup. It lists releases and takes the
+ * highest valid semver rather than trusting `releases/latest`, which is newest *by date*:
+ * a patch published for an older line after a newer release would otherwise walk the base
+ * version backwards.
+ *
+ * Drafts and prereleases are excluded, matching what `latest` meant on npm. A tag that is
+ * not semver is skipped rather than fatal — repositories accumulate tags like `deploy-2019`
+ * and one of those should not stop a deploy.
+ *
+ * Returns undefined when the repository has never released, when the token cannot see
+ * releases, or when the API is unreachable. The caller then falls back to package.json,
+ * which is oddish's behaviour for an unpublished package.
+ */
+export async function latestReleaseVersion(opts: {
+  token?: string;
+  context?: typeof github.context;
+}): Promise<string | undefined> {
+  if (!opts.token) {
+    core.warning(
+      "No GITHUB_TOKEN, so the latest release could not be read; falling back to the " +
+        "package.json version. Give the job `contents: read`.",
+    );
+    return undefined;
+  }
+
+  const context = opts.context || github.context;
+  try {
+    const octokit = github.getOctokit(opts.token);
+    const { data } = await octokit.rest.repos.listReleases({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      per_page: 100,
+    });
+
+    let best: string | undefined;
+    for (const release of data) {
+      if (release.draft || release.prerelease) continue;
+      // Tags are written both `1.2.3` and `v1.2.3` across these repositories.
+      const candidate = semver.valid(semver.clean(release.tag_name || "") || "");
+      if (!candidate) continue;
+      if (!best || semver.gt(candidate, best)) best = candidate;
+    }
+    return best;
+  } catch (error) {
+    core.warning(
+      `Could not read the releases of ${context.repo.owner}/${context.repo.repo} ` +
+        `(${error instanceof Error ? error.message : String(error)}); falling back to the ` +
+        "package.json version.",
+    );
+    return undefined;
+  }
 }

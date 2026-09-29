@@ -1,17 +1,31 @@
+import * as semver from "semver";
+
 /**
- * Commit-deterministic version.
+ * The version a commit build is published under.
  *
- * Format: `<baseVersion>-commit-<shortSha>`.
+ * Format: `<baseVersion>-<runId>.commit-<shortSha>`, e.g.
+ * `0.69.1-36632121287.commit-3a766af`.
  *
- * The version is derived purely from the base version + the commit, with NO run
- * id. This is deliberate: a later run (e.g. a release on the same commit) must
- * be able to *reconstruct* the version a previous run deployed, so it can locate
- * those bytes in S3 and copy them. It also makes re-runs idempotent (same commit
- * -> same S3 dir -> the state-aware check skips re-uploading). Safe because we no
- * longer publish to npm (run-id uniqueness only mattered for npm versions).
+ * This is oddish's format, deliberately, because the rollout records already hold years of
+ * versions it produced and the two have to sort together. Semver splits prerelease
+ * identifiers on `.` only, so `<runId>` is compared as a NUMBER and `commit-<sha>` as a
+ * string after it. Both parts matter:
+ *
+ * - Without the run id, every build between two releases shares a base and they sort by
+ *   sha, alphabetically. Roughly half of consecutive deploys would land below the previous
+ *   one, and a rollout that cannot win is a green job that changes nothing.
+ * - With a `-` instead of the `.`, `<runId>-commit-<sha>` is one alphanumeric identifier
+ *   compared lexically, which works only while every run id has the same digit count.
+ *
+ * An earlier version of this file omitted the run id on purpose, so that a release could
+ * reconstruct the commit version it was copying. That reason is gone: releases rebuild
+ * under the tag rather than copying, because every site bakes its asset base from the
+ * version at build time. A re-run keeps its run id, so re-running a failed job still
+ * resolves to the same prefix.
  */
 
 const SHA_RE = /^[0-9a-f]{7,40}$/i;
+const RUN_ID_RE = /^[0-9]+$/;
 
 /**
  * First 7 chars of a commit sha, matching `git rev-parse --short`.
@@ -32,8 +46,60 @@ export function shortSha(sha: string): string {
   return trimmed.toLowerCase().slice(0, 7);
 }
 
-export function computeVersion(opts: { baseVersion: string; sha: string }): string {
+/**
+ * Which release a commit build is built on top of.
+ *
+ * This is oddish's rule with the registry swapped for GitHub. `package.json` is only a
+ * floor — the anchor is the newest release, patch-incremented, because a prerelease of the
+ * live version sorts BELOW it (`0.69.0-x < 0.69.0`) and would never be served.
+ *
+ * That `package.json` is only a floor is not a detail: `@dcl/sites` sat at `0.0.1` for 69
+ * minor versions without anyone noticing, because oddish never read it either.
+ */
+export function resolveBaseVersion(opts: {
+  packageVersion?: string;
+  latestRelease?: string;
+}): string {
+  const { packageVersion, latestRelease } = opts;
+
+  if (!latestRelease) {
+    if (!packageVersion) {
+      throw new Error(
+        "Unable to resolve a base version: this repository has no published release and the " +
+          "repo-root package.json has no `version`. Check the repository out in this job, publish " +
+          "a release, or set the `base-version` input. Only a run that has to compute a commit " +
+          "version needs one: pass `version` to deploy or repoint a version you already know.",
+      );
+    }
+    return packageVersion;
+  }
+
+  // `-0` is the lowest possible prerelease of packageVersion, so this asks "is every
+  // commit build of packageVersion below the latest release?". When package.json names
+  // the SAME version as the release, the answer is still yes -- which is what makes the
+  // patch bump happen rather than colliding with the release itself.
+  const floor = packageVersion ? `${packageVersion}-0` : undefined;
+  if (!floor || !semver.valid(floor) || semver.lt(floor, latestRelease)) {
+    const bumped = semver.inc(latestRelease, "patch");
+    if (!bumped) throw new Error(`Could not increment the latest release "${latestRelease}".`);
+    return bumped;
+  }
+
+  return packageVersion as string;
+}
+
+export function computeVersion(opts: {
+  baseVersion: string;
+  sha: string;
+  runId: string;
+}): string {
   if (!opts.baseVersion) throw new Error("computeVersion: missing baseVersion");
   if (!opts.sha) throw new Error("computeVersion: missing commit sha");
-  return `${opts.baseVersion}-commit-${shortSha(opts.sha)}`;
+  if (!RUN_ID_RE.test(String(opts.runId ?? "").trim())) {
+    throw new Error(
+      `"${opts.runId}" is not a GitHub run id. It must be digits: it is compared numerically ` +
+        "by semver, and it is what orders two builds of the same base version.",
+    );
+  }
+  return `${opts.baseVersion}-${String(opts.runId).trim()}.commit-${shortSha(opts.sha)}`;
 }

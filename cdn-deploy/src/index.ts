@@ -1,38 +1,49 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { folderHasIndexHtml, readInputs } from "./inputs";
-import { computeVersion } from "./version";
+import { computeVersion, resolveBaseVersion } from "./version";
 import { resolveEnsurePlan } from "./plan";
 import { uploadFolderToS3, writeCompletionMarker } from "./s3";
 import { BrokerError, createBrokerClient, type BrokerClient, type RolloutResult } from "./broker";
 import { createBrokeredCredentials } from "./credentials";
-import { createObservability } from "./github";
+import { createObservability, latestReleaseVersion } from "./github";
 import { ActionInputs, Environment, S3Action } from "./types";
 
 async function run(): Promise<void> {
   const inputs = readInputs();
   const { packageName } = inputs;
 
-  // commitVersion is reproducible from the commit (no run id), so a release run can locate
-  // the dev-deployed bytes. `commit` lets a manual deploy target a specific commit's build;
-  // otherwise it's the workflow's commit.
+  // `commit` lets a manual deploy target a specific commit's build; otherwise it's the
+  // workflow's commit.
   const sha = inputs.commit || github.context.sha;
 
   // Lazy, deliberately. Computing it eagerly meant every run had to resolve a base
   // version, including a promotion that supplies `version` and checks nothing out — which
   // died in readInputs before it ever reached the broker.
-  const commitVersion = (): string => {
-    if (!inputs.baseVersion) {
-      throw new Error(
-        "Unable to resolve the base version. The repo-root package.json has no `version` — check " +
-          "the repository out in this job, or set the `base-version` input. Only a run that has to " +
-          "compute a commit version needs it: pass `version` to deploy or repoint a known one.",
-      );
-    }
-    return computeVersion({ baseVersion: inputs.baseVersion, sha });
+  // Still lazy, and now async: resolving the base means asking GitHub for the newest
+  // release. A promotion supplies `version` and checks nothing out, so it must not pay for
+  // that call -- eagerly resolving is what used to kill those runs inside readInputs.
+  let resolved: string | undefined;
+  const commitVersion = async (): Promise<string> => {
+    if (resolved) return resolved;
+
+    // An explicit `base-version` wins outright; otherwise the newest release anchors it and
+    // package.json is only a floor. package.json alone is not enough: it is `0.0.1` in
+    // repositories serving 0.69.x, because oddish derived the version from the registry and
+    // nothing ever wrote it back.
+    const baseVersion =
+      inputs.baseVersion ||
+      resolveBaseVersion({
+        packageVersion: inputs.packageVersion,
+        latestRelease: await latestReleaseVersion({ token: process.env.GITHUB_TOKEN }),
+      });
+
+    resolved = computeVersion({ baseVersion, sha, runId: String(github.context.runId) });
+    core.info(`base version:  ${baseVersion}`);
+    return resolved;
   };
 
-  const targetVersion = inputs.version || commitVersion();
+  const targetVersion = inputs.version || (await commitVersion());
 
   const remoteFolder = `${packageName}/${targetVersion}`;
   const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${targetVersion}`;
@@ -47,6 +58,16 @@ async function run(): Promise<void> {
   core.info(`environments: ${envs.length ? envs.join(", ") : "(stage only — no rollout)"}`);
   core.info(`cdn url:      ${cdnUrl}`);
   core.info(`broker:       ${inputs.brokerUrl}`);
+
+  // Every Decentraland site bakes its asset base URL from the version at build time, so the
+  // build cannot start until the version is known -- and the version depends on the newest
+  // release, which only this action knows how to read. Rather than have each workflow
+  // reimplement that rule in shell (which is how `@dcl/sites` ended up building `0.0.1-…`
+  // while serving 0.69.x), the same action answers the question first and deploys second.
+  if (inputs.resolveVersionOnly) {
+    core.info("resolve-version-only: reported the version; nothing was uploaded or rolled out.");
+    return;
+  }
 
   const broker = createBrokerClient({ baseUrl: inputs.brokerUrl, audience: inputs.oidcAudience });
 
@@ -106,7 +127,7 @@ async function run(): Promise<void> {
         folderPresent: !!inputs.distPath,
         targetVersion,
         // Only the copy path reads this, and only that path needs a base version.
-        commitVersion: inputs.copyFromCommit ? commitVersion() : undefined,
+        commitVersion: inputs.copyFromCommit ? await commitVersion() : undefined,
         copyFromCommit: inputs.copyFromCommit,
       });
 
