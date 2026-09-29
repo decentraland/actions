@@ -81113,6 +81113,26 @@ const s3_1 = __nccwpck_require__(72049);
 const broker_1 = __nccwpck_require__(42494);
 const credentials_1 = __nccwpck_require__(33029);
 const github_1 = __nccwpck_require__(69248);
+const fs = __importStar(__nccwpck_require__(79896));
+/**
+ * Put the resolved version where the build will look for it.
+ *
+ * Deliberately narrow: it rewrites `version` and nothing else, preserving the rest of the
+ * file byte for byte apart from re-indentation, because this runs against a checkout the
+ * later steps still use.
+ */
+function writePackageVersion(version) {
+    try {
+        const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+        pkg.version = version;
+        fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+    }
+    catch (error) {
+        core.warning(`Could not write the version into package.json (${error instanceof Error ? error.message : String(error)}). ` +
+            "A build that reads its asset base URL from package.json will use the stale value; " +
+            "read CDN_DEPLOY_VERSION instead.");
+    }
+}
 async function run() {
     const inputs = (0, inputs_1.readInputs)();
     const { packageName } = inputs;
@@ -81142,7 +81162,10 @@ async function run() {
         core.info(`base version:  ${baseVersion}`);
         return resolved;
     };
-    const targetVersion = inputs.version || (await commitVersion());
+    // `CDN_DEPLOY_VERSION` is set by the resolve stage of the same run. Reusing it keeps the
+    // deploy on the version the bytes were actually built for, and saves asking GitHub for
+    // the release list twice.
+    const targetVersion = inputs.version || process.env.CDN_DEPLOY_VERSION || (await commitVersion());
     const remoteFolder = `${packageName}/${targetVersion}`;
     const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${targetVersion}`;
     const envs = inputs.environments;
@@ -81154,13 +81177,22 @@ async function run() {
     core.info(`environments: ${envs.length ? envs.join(", ") : "(stage only — no rollout)"}`);
     core.info(`cdn url:      ${cdnUrl}`);
     core.info(`broker:       ${inputs.brokerUrl}`);
-    // Every Decentraland site bakes its asset base URL from the version at build time, so the
-    // build cannot start until the version is known -- and the version depends on the newest
-    // release, which only this action knows how to read. Rather than have each workflow
-    // reimplement that rule in shell (which is how `@dcl/sites` ended up building `0.0.1-…`
-    // while serving 0.69.x), the same action answers the question first and deploys second.
-    if (inputs.resolveVersionOnly) {
-        core.info("resolve-version-only: reported the version; nothing was uploaded or rolled out.");
+    // The resolve stage of a `build-command` run: settle the version, publish it for the
+    // build, and stop. The deploy stage that follows reuses it rather than resolving again,
+    // so the bytes and the prefix cannot disagree.
+    //
+    // Every Decentraland site bakes its asset base URL from the version at build time, so a
+    // build that starts before the version is settled produces HTML pointing at a prefix
+    // nothing was ever uploaded to.
+    if (process.env.CDN_DEPLOY_STAGE === "resolve") {
+        // The contract going forward: read this, not package.json.
+        core.exportVariable("CDN_DEPLOY_VERSION", targetVersion);
+        // And written into package.json as well, because that is where every site's prebuild
+        // reads it from today. Not a second source of truth -- the same value, put where the
+        // existing builds already look, so no site has to change to be deployed correctly.
+        // Those prebuilds rewrite this file themselves, so it is already scratch during CI.
+        writePackageVersion(targetVersion);
+        core.info("Resolved the version for the build. Nothing uploaded or rolled out yet.");
         return;
     }
     const broker = (0, broker_1.createBrokerClient)({ baseUrl: inputs.brokerUrl, audience: inputs.oidcAudience });
@@ -81869,7 +81901,6 @@ function readInputs() {
         requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
         force: parseBooleanInput(core.getInput("force"), false, "force"),
         copyFromCommit: parseBooleanInput(core.getInput("copy-from-commit"), false, "copy-from-commit"),
-        resolveVersionOnly: parseBooleanInput(core.getInput("resolve-version-only"), false, "resolve-version-only"),
         createGithubDeployment: parseBooleanInput(core.getInput("create-github-deployment"), true, "create-github-deployment"),
         cdnBaseUrl: core.getInput("cdn-base-url") || exports.DEFAULT_CDN_BASE_URL,
         brokerUrl: core.getInput("broker-url") || types_1.DEFAULT_BROKER_URL,

@@ -1,6 +1,6 @@
 {
   "name": "@dcl/cdn-deploy-action",
-  "version": "1.0.0",
+  "version": "8.36.0",
   "private": true,
   "description": "Build-folder -> S3 -> Cloudflare KV rollout in a single GitHub Action (OIDC for AWS).",
   "main": "dist/index.js",

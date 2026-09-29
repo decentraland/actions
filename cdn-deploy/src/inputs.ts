@@ -327,11 +327,6 @@ export function readInputs(): ActionInputs {
     requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
     force: parseBooleanInput(core.getInput("force"), false, "force"),
     copyFromCommit: parseBooleanInput(core.getInput("copy-from-commit"), false, "copy-from-commit"),
-    resolveVersionOnly: parseBooleanInput(
-      core.getInput("resolve-version-only"),
-      false,
-      "resolve-version-only",
-    ),
     createGithubDeployment: parseBooleanInput(
       core.getInput("create-github-deployment"),
       true,

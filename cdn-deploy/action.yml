@@ -55,10 +55,10 @@ inputs:
     description: "Audience requested on the GitHub OIDC token. Must match what the broker expects; the calling job needs `permissions: { id-token: write }`."
     required: false
     default: "dcl-cdn-deploy"
-  resolve-version-only:
-    description: "Resolve the version, set the outputs and stop. Nothing is uploaded or rolled out. For workflows that must know the version BEFORE building, because the build bakes the asset base URL from it."
+  build-command:
+    description: "Build the site inside this action, after the version is settled and before it is uploaded. The version is exported as CDN_DEPLOY_VERSION and written into package.json first, because every Decentraland site bakes its CDN base URL from the version at build time — a build that runs before the version is known emits HTML pointing at a prefix nothing was uploaded to. Leave empty to build yourself and pass `version` explicitly."
     required: false
-    default: "false"
+    default: ""
   cdn-base-url:
     description: "CDN origin used to compute the cdn-url output."
     required: false
@@ -81,6 +81,37 @@ outputs:
 runs:
   using: "composite"
   steps:
+    # Only when this action owns the build. The version has to be settled first: it is
+    # exported as CDN_DEPLOY_VERSION and written into package.json, both read by the
+    # prebuild that computes VITE_BASE_URL.
+    - name: Resolve the deploy version
+      if: ${{ inputs.build-command != '' }}
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/dist/index.js"
+      env:
+        CDN_DEPLOY_STAGE: resolve
+        INPUT_DIST-PATH: ${{ inputs.dist-path }}
+        INPUT_COPY-FROM-COMMIT: ${{ inputs.copy-from-commit }}
+        INPUT_COMMIT: ${{ inputs.commit }}
+        INPUT_PACKAGE-NAME: ${{ inputs.package-name }}
+        INPUT_BASE-VERSION: ${{ inputs.base-version }}
+        INPUT_DEPLOYMENT-ENVIRONMENTS: ${{ inputs.deployment-environments }}
+        INPUT_DEPLOYMENT-NAME: ${{ inputs.deployment-name }}
+        INPUT_PERCENTAGE: ${{ inputs.percentage }}
+        INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}
+        INPUT_FORCE: ${{ inputs.force }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_BROKER-URL: ${{ inputs.broker-url }}
+        INPUT_OIDC-AUDIENCE: ${{ inputs.oidc-audience }}
+        INPUT_CREATE-GITHUB-DEPLOYMENT: ${{ inputs.create-github-deployment }}
+        INPUT_CDN-BASE-URL: ${{ inputs.cdn-base-url }}
+        GITHUB_TOKEN: ${{ github.token }}
+
+    - name: Build
+      if: ${{ inputs.build-command != '' }}
+      shell: bash
+      run: ${{ inputs.build-command }}
+
     - name: Deploy to CDN and set rollout
       id: deploy
       shell: bash
@@ -97,7 +128,6 @@ runs:
         INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}
         INPUT_FORCE: ${{ inputs.force }}
         INPUT_VERSION: ${{ inputs.version }}
-        INPUT_RESOLVE-VERSION-ONLY: ${{ inputs.resolve-version-only }}
         INPUT_BROKER-URL: ${{ inputs.broker-url }}
         INPUT_OIDC-AUDIENCE: ${{ inputs.oidc-audience }}
         INPUT_CREATE-GITHUB-DEPLOYMENT: ${{ inputs.create-github-deployment }}

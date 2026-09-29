@@ -23,8 +23,6 @@ export type ActionInputs = {
   /** Pre-built directory to upload (deploy). Empty for copy/repoint flows. */
   distPath: string;
   packageName: string;
-  /** Resolve the version, report it and stop: no upload, no rollout. */
-  resolveVersionOnly: boolean;
   /** An explicit `base-version` input. Overrides everything when present. */
   baseVersion?: string;
   /** The repo-root package.json version. A floor, not the anchor. */

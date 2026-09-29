@@ -9,6 +9,7 @@ import { ActionInputs } from "../src/types";
 
 jest.mock("@actions/core", () => ({
   setOutput: jest.fn(),
+  exportVariable: jest.fn(),
   setFailed: jest.fn(),
   info: jest.fn(),
   debug: jest.fn(),
@@ -46,8 +47,7 @@ describe("when running the cdn-deploy action", () => {
 
   function buildInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
     return {
-      resolveVersionOnly: false,
-    distPath: "",
+      distPath: "",
       packageName: PACKAGE_NAME,
       baseVersion: "1.0.0",
       environments: ["zone", "today"],
@@ -219,6 +219,83 @@ describe("when running the cdn-deploy action", () => {
       await run();
 
       expect(broker.rollout).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  /**
+   * The resolve stage of a `build-command` run. It exists because every site bakes its CDN
+   * base URL from the version at build time, so the build cannot start until the version is
+   * settled -- and it must be the SAME version the upload then uses, or the HTML points at
+   * a prefix that was never written.
+   */
+  describe("and the run is the resolve stage of a build", () => {
+    beforeEach(() => {
+      process.env.CDN_DEPLOY_STAGE = "resolve";
+      inputs = buildInputs({ version: "8.36.0", distPath: "./dist", environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+      // Pinned so "did not upload" can only be explained by the short circuit. Left to
+      // whatever the previous test set, this passed because the run died on the index
+      // check instead -- a test that cannot fail for the stated reason.
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      broker.requestCredentials.mockResolvedValue({
+        bucket: "cdn-test-bucket",
+        region: "us-east-1",
+        prefix: "@dcl/auth-site/8.36.0/",
+        credentials: { accessKeyId: "AKIA", secretAccessKey: "s", sessionToken: "t" },
+      });
+    });
+
+    afterEach(() => {
+      delete process.env.CDN_DEPLOY_STAGE;
+      delete process.env.CDN_DEPLOY_VERSION;
+    });
+
+    it("should publish the version for the build to read", async () => {
+      await run();
+
+      expect(core.exportVariable).toHaveBeenCalledWith("CDN_DEPLOY_VERSION", "8.36.0");
+    });
+
+    it("should still report the version as an output", async () => {
+      await run();
+
+      expect(setOutputMock).toHaveBeenCalledWith("version", "8.36.0");
+    });
+
+    // Asserted together on purpose: "did not upload" is also true of a run that fell over
+    // on the way there, and this stage failing is exactly the thing that would strand a
+    // workflow with a built site and no deploy.
+    it("should upload nothing, since nothing has been built yet", async () => {
+      await run();
+
+      expect(uploadFolderToS3).not.toHaveBeenCalled();
+      expect(core.setFailed).not.toHaveBeenCalled();
+    });
+
+    it("should roll nothing out", async () => {
+      await run();
+
+      expect(broker.rollout).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("and the deploy stage follows a resolve", () => {
+    // The whole point of exporting it: the deploy must not resolve a second, different
+    // version, or the bytes and the prefix disagree.
+    beforeEach(() => {
+      process.env.CDN_DEPLOY_VERSION = "0.69.1-4242.commit-abc1234";
+      inputs = buildInputs({ version: undefined, distPath: "./dist", environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+    });
+
+    afterEach(() => {
+      delete process.env.CDN_DEPLOY_VERSION;
+    });
+
+    it("should deploy the version the build was given", async () => {
+      await run();
+
+      expect(setOutputMock).toHaveBeenCalledWith("version", "0.69.1-4242.commit-abc1234");
     });
   });
 
