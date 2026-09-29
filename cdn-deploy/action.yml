@@ -90,7 +90,10 @@ runs:
       run: node "$GITHUB_ACTION_PATH/dist/index.js"
       env:
         CDN_DEPLOY_STAGE: resolve
-        INPUT_DIST-PATH: ${{ inputs.dist-path }}
+        # dist-path is deliberately NOT passed here. The build has not run yet, so the
+        # folder does not exist, and readInputs validates a dist-path it is given -- which
+        # failed this stage before it could resolve anything. Nothing in the resolve stage
+        # reads it; the deploy step below gets it, once the bytes are there.
         INPUT_COPY-FROM-COMMIT: ${{ inputs.copy-from-commit }}
         INPUT_COMMIT: ${{ inputs.commit }}
         INPUT_PACKAGE-NAME: ${{ inputs.package-name }}
