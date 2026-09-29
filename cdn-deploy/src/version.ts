@@ -88,11 +88,7 @@ export function resolveBaseVersion(opts: {
   return packageVersion as string;
 }
 
-export function computeVersion(opts: {
-  baseVersion: string;
-  sha: string;
-  runId: string;
-}): string {
+export function computeVersion(opts: { baseVersion: string; sha: string; runId: string }): string {
   if (!opts.baseVersion) throw new Error("computeVersion: missing baseVersion");
   if (!opts.sha) throw new Error("computeVersion: missing commit sha");
   if (!RUN_ID_RE.test(String(opts.runId ?? "").trim())) {

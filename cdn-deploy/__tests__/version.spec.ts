@@ -186,7 +186,9 @@ describe("when ordering versions", () => {
 describe("when resolving the base version", () => {
   describe("and package.json is behind the latest release", () => {
     it("should anchor on the release and bump the patch", () => {
-      expect(resolveBaseVersion({ packageVersion: "0.0.1", latestRelease: "0.69.0" })).toBe("0.69.1");
+      expect(resolveBaseVersion({ packageVersion: "0.0.1", latestRelease: "0.69.0" })).toBe(
+        "0.69.1",
+      );
     });
   });
 
@@ -194,13 +196,17 @@ describe("when resolving the base version", () => {
   // would build something that can never be served.
   describe("and package.json names exactly the latest release", () => {
     it("should still bump the patch", () => {
-      expect(resolveBaseVersion({ packageVersion: "0.69.0", latestRelease: "0.69.0" })).toBe("0.69.1");
+      expect(resolveBaseVersion({ packageVersion: "0.69.0", latestRelease: "0.69.0" })).toBe(
+        "0.69.1",
+      );
     });
   });
 
   describe("and package.json is ahead of the latest release", () => {
     it("should keep package.json, so a planned bump wins", () => {
-      expect(resolveBaseVersion({ packageVersion: "1.0.0", latestRelease: "0.69.0" })).toBe("1.0.0");
+      expect(resolveBaseVersion({ packageVersion: "1.0.0", latestRelease: "0.69.0" })).toBe(
+        "1.0.0",
+      );
     });
   });
 

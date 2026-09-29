@@ -68,8 +68,7 @@ async function run(): Promise<void> {
   // `CDN_DEPLOY_VERSION` is set by the resolve stage of the same run. Reusing it keeps the
   // deploy on the version the bytes were actually built for, and saves asking GitHub for
   // the release list twice.
-  const targetVersion =
-    inputs.version || process.env.CDN_DEPLOY_VERSION || (await commitVersion());
+  const targetVersion = inputs.version || process.env.CDN_DEPLOY_VERSION || (await commitVersion());
 
   const remoteFolder = `${packageName}/${targetVersion}`;
   const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${targetVersion}`;
