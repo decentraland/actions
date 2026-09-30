@@ -20,7 +20,7 @@ There are no explicit "modes". The action figures out the S3 work from whether t
 | Target version **already** in S3 | **skip**                                             | repoint the environment(s) |
 | Not in S3, `dist-path` given     | **upload** the folder                                | repoint                    |
 | Not in S3, none of the above     | **error** — the run fails before anything is written | untouched                  |
-| `deployment-environments: '[]'`  | upload/copy/skip as above                            | **nothing** — stage only   |
+| `deployment-environments: '[]'`  | upload or skip as above                              | **nothing** — stage only   |
 
 The precedence is the order of the rows above (`deployment-environments` is a modifier, not a step): an already-populated target wins, then a `dist-path`.
 
@@ -36,7 +36,7 @@ That probe runs **broker-side**, and it is a refusal rather than a report: the b
 
 The version is `<base>-<runId>.commit-<shortSha>` — for example `0.69.1-36644372302.commit-1509d74`.
 
-`<base>` is the **newest published GitHub release, patch-incremented**; the repo-root `package.json` version is only a floor. This mirrors what oddish did with the npm registry, and it matters: `@dcl/sites` had `0.0.1` in package.json while serving `0.69.x`, so a version derived from that file sorted below everything already live and the deploy changed nothing while reporting success.
+`<base>` is the **highest semver among the repository's first 100 non-draft, non-prerelease releases**, patch-incremented; the repo-root `package.json` version is only a floor. Highest rather than most recent: a patch published for an older line after a newer release would otherwise walk the base version backwards, which is why the code lists releases instead of reading `releases/latest`. This mirrors what oddish did with the npm registry, and it matters: `@dcl/sites` had `0.0.1` in package.json while serving `0.69.x`, so a version derived from that file sorted below everything already live and the deploy changed nothing while reporting success.
 
 The run id is not decoration. Every build between two releases shares a base, and semver compares dot-separated prerelease identifiers — so without it two builds order by **sha, alphabetically**, and roughly half of consecutive deploys would sort below the previous one.
 
@@ -111,6 +111,7 @@ cache and registry auth stay with the repository, where they belong.
 - uses: decentraland/actions/cdn-deploy@...
   with:
     build-command: npm run build
+    dist-path: ./dist
 ```
 
 That `node` is also what runs the action itself — `node "$GITHUB_ACTION_PATH/dist/index.js"`
@@ -118,8 +119,9 @@ resolves from `PATH` — so the job's node version is the action's runtime too. 
 needs **Node 24 or newer** and refuses anything older up front, naming the version it found,
 rather than failing later inside whichever dependency reaches for a missing API.
 
-Job-level `env:` for anything the build needs (`SENTRY_AUTH_TOKEN` and the like): a
-composite action's steps do not inherit `env:` set on the step that calls it.
+Put anything the build needs (`SENTRY_AUTH_TOKEN` and the like) in **job-level** `env:`.
+The build is a child process of the action's step, so it inherits the job environment;
+job level is what this repository's callers use and what has been verified working.
 
 ## Inputs
 
