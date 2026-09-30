@@ -81685,7 +81685,13 @@ const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
  * required to be a safe S3 key segment.
  */
 function normaliseVersion(version) {
-    return semver.clean(version) ?? version;
+    // Not `semver.clean`: that also drops `+build` metadata, which `VERSION_RE` allows and
+    // which distinguishes two uploads. `1.2.3+build.5` and `1.2.3+build.6` would collapse to
+    // the same prefix, and the second deploy would be refused as already published -- which
+    // the action treats as an idempotent re-run, so it would roll the environments onto the
+    // FIRST build's bytes and report success. It also strips a leading `=`, which
+    // `VERSION_RE` rejects on purpose.
+    return /^v\d/.test(version) && semver.valid(version) ? version.slice(1) : version;
 }
 function validateVersionShape(version, source) {
     if (!VERSION_RE.test(version)) {
@@ -81901,9 +81907,17 @@ function readInputs() {
     // Trimmed so a caller's stray newline does not become a build that runs an empty
     // command and reports success.
     const buildCommand = core.getInput("build-command").trim() || undefined;
+    // Normalised only when the action runs the build. That is the one case where the version
+    // reaches the bundle through a manifest that may rewrite it -- a repository seeding
+    // `package.json` with `npm version` gets npm's bare form, so an upload under the tag's own
+    // `v1.2.3` would serve HTML asking for `/1.2.3/`.
+    //
+    // A caller that builds its own bundle baked in whatever it passed, and a repoint or a
+    // rollback names a prefix already sitting in S3. Rewriting either would invent the same
+    // mismatch in the other direction.
     const versionInput = core.getInput("version").trim();
     const version = versionInput
-        ? validateVersionShape(normaliseVersion(versionInput), "the `version` input")
+        ? validateVersionShape(buildCommand ? normaliseVersion(versionInput) : versionInput, "the `version` input")
         : undefined;
     return {
         distPath,
@@ -81926,7 +81940,7 @@ function readInputs() {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MAX_RETRY_DELAY_MS = void 0;
+exports.LEASE_CONTENTION_ATTEMPTS = exports.MAX_RETRY_DELAY_MS = void 0;
 exports.isRetryable = isRetryable;
 exports.withRetry = withRetry;
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -81935,7 +81949,27 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * for the rest of the run's budget.
  */
 exports.MAX_RETRY_DELAY_MS = 30000;
-/** `Retry-After` in milliseconds, when the failure carried one the broker set. */
+/**
+ * Attempts allowed while another caller holds the rollout lease.
+ *
+ * Contention is a queue, not a fault, so the budget is sized to outlast the queue rather
+ * than to give up politely. The broker answers `rollout_in_progress` with `Retry-After: 5`
+ * and no holder can outlive its own 30s function timeout, so eight waits of five seconds
+ * clears the longest lease a live holder can hold with margin. The general budget stays at
+ * three: a 5xx that has failed three times is not about to stop.
+ */
+exports.LEASE_CONTENTION_ATTEMPTS = 9;
+/** Contention for the rollout lease, which is waited out rather than backed off from. */
+function isLeaseContention(e) {
+    return e?.code === "rollout_in_progress";
+}
+/**
+ * `Retry-After` in milliseconds, when the failure carried one the broker set.
+ *
+ * Only the delta-seconds form is read. The HTTP-date form parses to NaN and is ignored,
+ * leaving the backoff schedule — which is correct rather than merely tolerable, since the
+ * broker only ever sends seconds.
+ */
 function retryAfterMsOf(e) {
     const seconds = e?.retryAfterSeconds;
     if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0)
@@ -81950,10 +81984,12 @@ function isRetryable(e) {
         return false;
     }
     // `rollout_in_progress` is a 409, but the broker means it as "wait", not "no": another
-    // rollout holds the lease on that key and will finish in well under a second. It even
-    // sends Retry-After. Treating it as terminal failed a deploy the server intended to
-    // succeed — including when the retry collided with the caller's OWN first attempt after
-    // an API Gateway 504.
+    // caller holds the lease on that record. It sends a Retry-After with it. Treating it as
+    // terminal failed a deploy the server intended to succeed — including when the retry
+    // collided with the caller's OWN first attempt after an API Gateway 504.
+    //
+    // A holder cannot outlive the broker's own 30s function timeout, so the wait is bounded;
+    // see LEASE_CONTENTION_ATTEMPTS for why that bound sets the attempt budget.
     const code = e?.code;
     if (code === "rollout_in_progress")
         return true;
@@ -81977,29 +82013,33 @@ async function withRetry(label, fn, opts = {}) {
     const attempts = Math.max(1, opts.attempts ?? 3);
     const baseDelayMs = opts.baseDelayMs ?? 500;
     const sleep = opts.sleep ?? defaultSleep;
-    let lastError;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
+    // Unbounded on purpose: the ceiling depends on which failure came back, and that is not
+    // known until one does. Every path through the body either returns or throws, and `limit`
+    // is finite, so this terminates.
+    for (let attempt = 1;; attempt++) {
         try {
             return await fn();
         }
         catch (e) {
-            lastError = e;
-            if (attempt === attempts || !isRetryable(e))
+            const limit = isLeaseContention(e) ? Math.max(attempts, exports.LEASE_CONTENTION_ATTEMPTS) : attempts;
+            if (attempt >= limit || !isRetryable(e))
                 throw e;
-            // The server's own estimate wins when it gives one. Backing off on a fixed schedule
-            // instead means giving up while the thing being waited for is still in progress:
-            // `rollout_in_progress` sends a Retry-After because another caller holds the lease on
-            // that record, and the exponential schedule alone spends its whole budget in about a
-            // second and a half. Capped so a large or malformed value cannot stall the job.
+            // The server's estimate replaces the schedule rather than racing it. Backing off on
+            // top of a Retry-After is counterproductive for something that is a queue rather than
+            // a fault: `rollout_in_progress` means another caller holds the lease, and doubling
+            // the wait each time overshoots the moment it is released. Where nothing was asked
+            // for, the exponential schedule stands.
+            //
+            // Floored at `baseDelayMs` so an implausibly small value cannot become a hot loop,
+            // and capped so a large or malformed one cannot park the job.
             const backoff = baseDelayMs * 2 ** (attempt - 1);
             const retryAfterMs = retryAfterMsOf(e);
-            const delay = Math.min(Math.max(backoff, retryAfterMs ?? 0), exports.MAX_RETRY_DELAY_MS);
-            opts.onRetry?.(`${label} failed (attempt ${attempt}/${attempts}), retrying in ${delay}ms: ` +
+            const delay = Math.min(Math.max(retryAfterMs ?? backoff, baseDelayMs), exports.MAX_RETRY_DELAY_MS);
+            opts.onRetry?.(`${label} failed (attempt ${attempt}/${limit}), retrying in ${delay}ms: ` +
                 (e instanceof Error ? e.message : String(e)));
             await sleep(delay);
         }
     }
-    throw lastError;
 }
 
 

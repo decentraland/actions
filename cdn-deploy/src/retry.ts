@@ -9,7 +9,29 @@ const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve,
  */
 export const MAX_RETRY_DELAY_MS = 30_000;
 
-/** `Retry-After` in milliseconds, when the failure carried one the broker set. */
+/**
+ * Attempts allowed while another caller holds the rollout lease.
+ *
+ * Contention is a queue, not a fault, so the budget is sized to outlast the queue rather
+ * than to give up politely. The broker answers `rollout_in_progress` with `Retry-After: 5`
+ * and no holder can outlive its own 30s function timeout, so eight waits of five seconds
+ * clears the longest lease a live holder can hold with margin. The general budget stays at
+ * three: a 5xx that has failed three times is not about to stop.
+ */
+export const LEASE_CONTENTION_ATTEMPTS = 9;
+
+/** Contention for the rollout lease, which is waited out rather than backed off from. */
+function isLeaseContention(e: unknown): boolean {
+  return (e as { code?: string } | undefined)?.code === "rollout_in_progress";
+}
+
+/**
+ * `Retry-After` in milliseconds, when the failure carried one the broker set.
+ *
+ * Only the delta-seconds form is read. The HTTP-date form parses to NaN and is ignored,
+ * leaving the backoff schedule — which is correct rather than merely tolerable, since the
+ * broker only ever sends seconds.
+ */
 function retryAfterMsOf(e: unknown): number | undefined {
   const seconds = (e as { retryAfterSeconds?: number } | undefined)?.retryAfterSeconds;
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return undefined;
@@ -24,10 +46,12 @@ export function isRetryable(e: unknown): boolean {
     return false;
   }
   // `rollout_in_progress` is a 409, but the broker means it as "wait", not "no": another
-  // rollout holds the lease on that key and will finish in well under a second. It even
-  // sends Retry-After. Treating it as terminal failed a deploy the server intended to
-  // succeed — including when the retry collided with the caller's OWN first attempt after
-  // an API Gateway 504.
+  // caller holds the lease on that record. It sends a Retry-After with it. Treating it as
+  // terminal failed a deploy the server intended to succeed — including when the retry
+  // collided with the caller's OWN first attempt after an API Gateway 504.
+  //
+  // A holder cannot outlive the broker's own 30s function timeout, so the wait is bounded;
+  // see LEASE_CONTENTION_ATTEMPTS for why that bound sets the attempt budget.
   const code = (e as { code?: string } | undefined)?.code;
   if (code === "rollout_in_progress") return true;
 
@@ -61,29 +85,33 @@ export async function withRetry<T>(
   const baseDelayMs = opts.baseDelayMs ?? 500;
   const sleep = opts.sleep ?? defaultSleep;
 
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
+  // Unbounded on purpose: the ceiling depends on which failure came back, and that is not
+  // known until one does. Every path through the body either returns or throws, and `limit`
+  // is finite, so this terminates.
+  for (let attempt = 1; ; attempt++) {
     try {
       return await fn();
     } catch (e) {
-      lastError = e;
-      if (attempt === attempts || !isRetryable(e)) throw e;
+      const limit = isLeaseContention(e) ? Math.max(attempts, LEASE_CONTENTION_ATTEMPTS) : attempts;
+      if (attempt >= limit || !isRetryable(e)) throw e;
 
-      // The server's own estimate wins when it gives one. Backing off on a fixed schedule
-      // instead means giving up while the thing being waited for is still in progress:
-      // `rollout_in_progress` sends a Retry-After because another caller holds the lease on
-      // that record, and the exponential schedule alone spends its whole budget in about a
-      // second and a half. Capped so a large or malformed value cannot stall the job.
+      // The server's estimate replaces the schedule rather than racing it. Backing off on
+      // top of a Retry-After is counterproductive for something that is a queue rather than
+      // a fault: `rollout_in_progress` means another caller holds the lease, and doubling
+      // the wait each time overshoots the moment it is released. Where nothing was asked
+      // for, the exponential schedule stands.
+      //
+      // Floored at `baseDelayMs` so an implausibly small value cannot become a hot loop,
+      // and capped so a large or malformed one cannot park the job.
       const backoff = baseDelayMs * 2 ** (attempt - 1);
       const retryAfterMs = retryAfterMsOf(e);
-      const delay = Math.min(Math.max(backoff, retryAfterMs ?? 0), MAX_RETRY_DELAY_MS);
+      const delay = Math.min(Math.max(retryAfterMs ?? backoff, baseDelayMs), MAX_RETRY_DELAY_MS);
 
       opts.onRetry?.(
-        `${label} failed (attempt ${attempt}/${attempts}), retrying in ${delay}ms: ` +
+        `${label} failed (attempt ${attempt}/${limit}), retrying in ${delay}ms: ` +
           (e instanceof Error ? e.message : String(e)),
       );
       await sleep(delay);
     }
   }
-  throw lastError;
 }
