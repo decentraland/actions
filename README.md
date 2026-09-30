@@ -131,41 +131,54 @@ Behaviour is otherwise unchanged: same `dcl/container-deployment` task, same pay
 
 # cdn-deploy
 
-Deploys a pre-built static site to the Decentraland CDN in one step: uploads the folder to S3, then patches the Cloudflare KV rollout record the CDN worker reads to pick a version. Replaces the `oddish-action` → `static-sites-pipeline` → `set-rollout-action` → `webhooks-receiver` relay.
+Builds and deploys a static site to the Decentraland CDN in one step: settles the version, runs the site's build, uploads the folder to S3, then patches the Cloudflare KV rollout record the CDN worker reads to pick a version. Replaces the `oddish-action` → `static-sites-pipeline` → `set-rollout-action` → `webhooks-receiver` relay.
 
 A site repository holds **no Cloudflare token and no IAM role**. The action authenticates to the cdn-deploy broker with a GitHub OIDC token; the broker checks the repository owns the package in [`decentraland/definitions`](https://github.com/decentraland/definitions) before minting S3 credentials scoped to one version prefix, or writing the rollout.
 
 ```yaml
 - uses: actions/checkout@v4
-- run: npm ci && npm run build # the site builds its own artifact
+- uses: actions/setup-node@v4
+  with:
+    node-version: 24.x
+    cache: npm
+- run: npm ci
 - uses: decentraland/actions/cdn-deploy@cdn-deploy-v1
   with:
+    build-command: npm run build
     dist-path: ./dist
-    deployment-environments: '["zone","today"]'
 ```
+
+The build runs **inside** the action, between settling the version and uploading it. That ordering is the point: every Decentraland site bakes its CDN base URL into the bundle from the version at build time, so a build that starts before the version is known emits HTML asking for its assets from a prefix nothing was ever uploaded to. Build it yourself instead if you must — then pass `dist-path` and `version` explicitly.
+
+The action installs nothing and sets up no toolchain: the build is a child process and inherits `PATH`, so the node version, npm cache and registry auth stay with the repository. That `node` also runs the action itself, which needs **Node 24 or newer** and says so up front rather than failing later inside a dependency.
 
 Unlike the rest of this repository, which is consumed from `@main`, `cdn-deploy` is consumed from the pinned major tag `@cdn-deploy-v1`: it runs from a committed bundle, and the release workflow only moves that tag onto a commit whose bundle matches its sources.
 
-The calling job needs `permissions: { id-token: write, contents: read, deployments: write, statuses: write }` — `id-token` to mint the OIDC token the broker authenticates, `deployments` and `statuses` only while `create-github-deployment` is on. Give it a `concurrency` group too, so one deploy runs at a time per repository; the KV update is read-modify-write.
+The calling job needs `permissions: { id-token: write, contents: read, deployments: write, statuses: write }` — `id-token` to mint the OIDC token the broker authenticates, `contents: read` to read the repository's releases, which is what the version is derived from, and `deployments`/`statuses` for the GitHub deployment and commit status. The last two are best-effort — missing them only warns — but they are always used. Give it a `concurrency` group too, so one deploy runs at a time per repository; the KV update is read-modify-write. Put build-time secrets in **job-level** `env:`. The build is a child process of the action's step, so it inherits the job environment; job level is what this repository's callers use and what has been verified working.
 
 ## Inputs
 
-Most inputs are defaulted from the checked-out `package.json`. The ones a caller normally sets:
+All seven are optional; the defaults come from the checked-out `package.json` and the repository's releases.
 
-| Input                     | Required      | Description                                                                                             |
-| ------------------------- | ------------- | ------------------------------------------------------------------------------------------------------- |
-| `dist-path`               | For an upload | Pre-built directory to upload, e.g. `./dist`. Omit for a release copy or a repoint                      |
-| `deployment-environments` | No            | Environments to repoint, `zone,today` by default. `'[]'` stages the bytes in S3 without rolling out     |
-| `version`                 | No            | Target version. Defaults to `<package.json version>-commit-<shortSha>`                                  |
-| `copy-from-commit`        | No            | Release flow: fill the target version by copying this commit's build. Off by default                    |
-| `slack-webhook`           | No            | The only secret a site repository still passes, and it is optional                                      |
-| `broker-url`              | No            | Overrides the broker endpoint. Defaults to the production one                                           |
+| Input                     | Default                    | Description                                                                                                                                                                          |
+| ------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `build-command`           | —                          | Build the site inside the action. Empty means you built it yourself — pass `version` too, since a bundle built outside the action does not know the version the action would compute |
+| `dist-path`               | —                          | Directory to upload, e.g. `./dist`. Omit only when the run just repoints an already-uploaded version                                                                                 |
+| `deployment-environments` | `zone`                     | Environments to repoint, as a comma list or JSON array. `'[]'` stages the bytes in S3 without rolling out                                                                            |
+| `version`                 | computed                   | Deploy under a specific version (a release tag), or alone to repoint at one already in S3                                                                                            |
+| `percentage`              | `100`                      | Rollout percentage                                                                                                                                                                   |
+| `package-name`            | `name` from `package.json` | S3 key root and KV record prefix                                                                                                                                                     |
+| `broker-url`              | production broker          | Escape hatch for testing against another broker                                                                                                                                      |
+
+`deployment-environments` defaults to `zone` alone, deliberately. `today` and `org` are promoted from a job that declares a matching GitHub `environment:`, so its protection rules apply — defaulting to both made every merge publish zone and then be refused for today, leaving the job red with the dev rollout already live.
+
+The computed version is `<base>-<runId>.commit-<sha7>`. `<base>` is the **highest semver** among the repository's first 100 non-draft, non-prerelease releases, patch-incremented when `package.json` sits below it, and otherwise `package.json` as-is. Highest rather than most recent, because a patch published for an old line after a newer release would otherwise walk the version backwards. With no release, no token or an API error it falls back to `package.json` — and warns, because that fallback is how a version ends up sorting below what is already live. `package.json`'s version is only a floor: several of these repositories have left it at `0.0.1` for dozens of releases, because oddish derived the version from the npm registry and nothing ever wrote it back.
 
 | Output    | Description                                                    |
 | --------- | -------------------------------------------------------------- |
 | `version` | The deployed version                                           |
 | `s3-path` | The S3 key prefix that was written: `<package-name>/<version>` |
 | `cdn-url` | Where the worker serves that version from                      |
-| `mode`    | What the S3 step did: `upload`, `copy` or `skip`               |
+| `mode`    | What the S3 step did: `upload` or `skip`                       |
 
-See [cdn-deploy/README.md](cdn-deploy/README.md) for the full input list, the state table that decides upload vs copy vs skip, and the push / release / manual-deploy flows.
+See [cdn-deploy/README.md](cdn-deploy/README.md) for what the completion marker guarantees, why a release rebuilds rather than copying, and the push / release / promote flows.

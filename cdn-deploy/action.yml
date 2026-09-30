@@ -1,12 +1,12 @@
 name: "Deploy static site to CDN"
-description: "Upload a pre-built site folder straight to S3 (via GitHub OIDC) and set the Cloudflare KV rollout, in a single step."
+description: "Build a site, upload it to S3 (via GitHub OIDC) and set the Cloudflare KV rollout, in a single step."
 branding:
   icon: "upload-cloud"
   color: "blue"
 
 inputs:
   dist-path:
-    description: "Path to the pre-built site directory to upload (e.g. ./dist). The caller builds it. Must be a directory inside the workspace. Required unless the run only repoints an already-uploaded version."
+    description: "Directory the deploy uploads (e.g. ./dist) — what `build-command` produces, or what you built yourself. Must be inside the workspace. Required unless the run only repoints an already-uploaded version."
     required: false
   package-name:
     description: "CDN prefix / S3 key root / KV record prefix. Defaults to `name` from the repo-root package.json. Validated as an npm package name."
@@ -41,7 +41,7 @@ outputs:
     description: "https://cdn.decentraland.org/<package-name>/<version> — where the worker serves the version from."
     value: ${{ steps.deploy.outputs.cdn-url }}
   mode:
-    description: "What the S3 step did: upload | copy | skip. Set before the KV write, so it is readable from an `if: always()` step even when the run later fails."
+    description: "What the S3 step did: upload | skip. Set before the KV write, so it is readable from an `if: always()` step even when the run later fails."
     value: ${{ steps.deploy.outputs.mode }}
 
 runs:

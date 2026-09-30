@@ -882,4 +882,34 @@ describe("when running the cdn-deploy action", () => {
       expect(order).toEqual(["build", "check-folder", "check-index"]);
     });
   });
+
+  /**
+   * The shape a copy-pasted quick-start produces: `build-command` with no `dist-path`.
+   * Nothing exercised it -- every build test passes `distPath: "./dist"` -- and the README
+   * example shipped in exactly this form. Without the guard the run builds for a minute,
+   * logs "Repoint only", asks the broker to roll an environment onto a version that was
+   * never uploaded, and goes red on the refusal.
+   */
+  describe("and a build-command is given with nowhere to upload from", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ buildCommand: "npm run build", distPath: "", environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+    });
+
+    it("should refuse, naming the input that is missing", async () => {
+      await expect(run()).rejects.toThrow(/`dist-path` was not/);
+    });
+
+    it("should refuse before spending the build", async () => {
+      await run().catch(() => undefined);
+
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it("should not ask the broker to roll out a version it never uploaded", async () => {
+      await run().catch(() => undefined);
+
+      expect(broker.rollout).not.toHaveBeenCalled();
+    });
+  });
 });

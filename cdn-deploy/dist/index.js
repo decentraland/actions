@@ -81235,6 +81235,19 @@ async function run() {
     core.info(`environments: ${envs.length ? envs.join(", ") : "(stage only — no rollout)"}`);
     core.info(`cdn url:      ${cdnUrl}`);
     core.info(`broker:       ${inputs.brokerUrl}`);
+    // A build with nowhere to put its output. `hasBytesToWrite` is false without a
+    // dist-path, so the run falls through to the repoint path: it builds for a minute, logs
+    // "Repoint only", and then asks the broker to roll an environment onto a version nothing
+    // uploaded. The broker refuses -- correctly -- and the job goes red after the whole
+    // build. Caught here, before that minute is spent.
+    //
+    // The "would do nothing" guard below does not cover this: it needs BOTH no bytes and no
+    // environments, and the default is `zone`.
+    if (inputs.buildCommand && !inputs.distPath) {
+        throw new Error("`build-command` was given but `dist-path` was not, so there is nowhere to upload " +
+            "from: the build would run and its output would be discarded. Pass `dist-path` " +
+            "(e.g. ./dist) naming what the build produces.");
+    }
     // The build runs here, between settling the version and uploading, because every
     // Decentraland site bakes its asset base URL from the version at build time: a build that
     // starts before the version is known emits HTML pointing at a prefix nothing was ever
