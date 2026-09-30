@@ -145,6 +145,7 @@ A site repository holds **no Cloudflare token and no IAM role**. The action auth
 - uses: decentraland/actions/cdn-deploy@cdn-deploy-v1
   with:
     build-command: npm run build
+    dist-path: ./dist
 ```
 
 The build runs **inside** the action, between settling the version and uploading it. That ordering is the point: every Decentraland site bakes its CDN base URL into the bundle from the version at build time, so a build that starts before the version is known emits HTML asking for its assets from a prefix nothing was ever uploaded to. Build it yourself instead if you must — then pass `dist-path` and `version` explicitly.
@@ -153,7 +154,7 @@ The action installs nothing and sets up no toolchain: the build is a child proce
 
 Unlike the rest of this repository, which is consumed from `@main`, `cdn-deploy` is consumed from the pinned major tag `@cdn-deploy-v1`: it runs from a committed bundle, and the release workflow only moves that tag onto a commit whose bundle matches its sources.
 
-The calling job needs `permissions: { id-token: write, contents: read, deployments: write, statuses: write }` — `id-token` to mint the OIDC token the broker authenticates, and `contents: read` to find the newest release, which is what the version is derived from. Give it a `concurrency` group too, so one deploy runs at a time per repository; the KV update is read-modify-write. Build-time secrets go in **job-level** `env:`: a composite action's steps do not inherit `env:` set on the step that calls it.
+The calling job needs `permissions: { id-token: write, contents: read, deployments: write, statuses: write }` — `id-token` to mint the OIDC token the broker authenticates, `contents: read` to read the repository's releases, which is what the version is derived from, and `deployments`/`statuses` for the GitHub deployment and commit status. The last two are best-effort — missing them only warns — but they are always used. Give it a `concurrency` group too, so one deploy runs at a time per repository; the KV update is read-modify-write. Put build-time secrets in **job-level** `env:`. The build is a child process of the action's step, so it inherits the job environment; job level is what this repository's callers use and what has been verified working.
 
 ## Inputs
 
@@ -171,7 +172,7 @@ All seven are optional; the defaults come from the checked-out `package.json` an
 
 `deployment-environments` defaults to `zone` alone, deliberately. `today` and `org` are promoted from a job that declares a matching GitHub `environment:`, so its protection rules apply — defaulting to both made every merge publish zone and then be refused for today, leaving the job red with the dev rollout already live.
 
-The computed version is `<base>-<runId>.commit-<sha7>`, where `<base>` is the newest published GitHub release with its patch incremented. `package.json`'s version is only a floor: several of these repositories have left it at `0.0.1` for dozens of releases, because oddish derived the version from the npm registry and nothing ever wrote it back.
+The computed version is `<base>-<runId>.commit-<sha7>`. `<base>` is the **highest semver** among the repository's first 100 non-draft, non-prerelease releases, patch-incremented — highest rather than most recent, because a patch published for an old line after a newer release would otherwise walk the version backwards. `package.json`'s version is only a floor: several of these repositories have left it at `0.0.1` for dozens of releases, because oddish derived the version from the npm registry and nothing ever wrote it back.
 
 | Output    | Description                                                    |
 | --------- | -------------------------------------------------------------- |

@@ -5,11 +5,11 @@ Deploy a pre-built static site to the Decentraland CDN **in a single step**:
 1. Put the assets at `s3://<bucket>/<package-name>/<version>/…`
 2. Patch the Cloudflare KV rollout record the CF Worker reads to pick a version.
 
-Neither credential lives here. The action authenticates to the **cdn-deploy broker** with a GitHub OIDC token; the broker verifies it against GitHub's published keys, checks that the calling repository owns the package in [`@decentraland/definitions`](https://github.com/decentraland/definitions), and only then mints S3 credentials scoped to one version prefix or writes the rollout. A site repository needs **no Cloudflare token and no IAM role** — only `permissions: { id-token: write }`.
+Neither credential lives here. The action authenticates to the **cdn-deploy broker** with a GitHub OIDC token; the broker verifies it against GitHub's published keys, checks that the calling repository owns the package in [`@decentraland/definitions`](https://github.com/decentraland/definitions), and only then mints S3 credentials scoped to one version prefix or writes the rollout. A site repository needs **no Cloudflare token and no IAM role**. It needs `permissions: { id-token: write, contents: read, deployments: write, statuses: write }`: `id-token` to mint the OIDC token the broker authenticates, `contents: read` to read the repository's releases — which is what the version is derived from, so without it the version silently falls back to `package.json` — and `deployments`/`statuses` for the GitHub deployment and commit status, which are best-effort and only warn when missing.
 
 It replaces the old three-stage relay (`oddish-action` npm publish → `static-sites-pipeline` GitLab S3 upload → `set-rollout-action` → `webhooks-receiver` → KV). **No npm publish, no npm re-download, no GitLab, no webhooks-receiver hop.**
 
-The **caller builds its own artifact** and hands the action a `dist-path` — build and deploy run in the same job, so there's no artifact round-trip.
+The action **runs the site's build itself**, via `build-command`, between settling the version and uploading it. Every Decentraland site bakes its CDN base URL into the bundle from the version at build time, so a build that starts before the version is known emits HTML asking for its assets from a prefix nothing was ever uploaded to. Build it yourself instead if you must, and pass `dist-path` and `version`.
 
 ## State-aware: it infers what to do from S3
 
@@ -24,7 +24,7 @@ There are no explicit "modes". The action figures out the S3 work from whether t
 
 The precedence is the order of the rows above (`deployment-environments` is a modifier, not a step): an already-populated target wins, then a `dist-path`.
 
-A run with **no** `dist-path`, no
+A run with **no** `dist-path` and no environments is refused outright: it would upload nothing and publish nothing, and reporting that as a success is how an empty prefix goes unnoticed until someone promotes it. A `build-command` with no `dist-path` is refused too, before the build runs, because its output would have nowhere to go.
 
 **Filling an absent target is opt-in.** "Repoint at version X" and "release-copy into version X" are the same input shape (`version` set, no folder), so a `version` that is merely absent — a typo, an expired prefix — is an error rather than being silently filled with whatever the current commit built and then served. A release publishes under its tag by **rebuilding** with `build-command` and `version: <tag>`, not by copying: every site bakes its asset base URL from the version, so copied bytes would ask for their assets from the prefix they were built for.
 
@@ -44,7 +44,7 @@ The package name is read from the repo-root `package.json` (not the upload folde
 
 ## Quick start
 
-Per-repo setup is one line of `permissions`. The only secret a site repository still passes is the Slack webhook, and that is optional.
+Per-repo setup is the `permissions` block above. A site repository passes **no secrets at all** — rollouts are announced by the broker, which holds the Slack credential.
 
 What a site does need is an entry in [`decentraland/definitions`](https://github.com/decentraland/definitions) → `src/static-site-rollouts.ts`, naming the repository that owns the package, the domains it may roll out to, and its `deploymentPath`. The broker will not deploy a package it cannot attribute to a repository.
 
@@ -67,9 +67,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 24 }
-      - run: npm ci && npm run build # the UI builds its own artifact
+      - run: npm ci
       - uses: decentraland/actions/cdn-deploy@cdn-deploy-v1
         with:
+          build-command: npm run build
           dist-path: ./dist
 ```
 
@@ -125,7 +126,7 @@ composite action's steps do not inherit `env:` set on the step that calls it.
 | Input                     | Required | Default                               | Description                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------------------- | -------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `build-command`           |          | —                                     | Build the site inside the action, after the version is settled and before it is uploaded. The version is exported as `CDN_DEPLOY_VERSION` and written into `package.json` first, because every site bakes its CDN base URL from the version at build time — a build that runs before the version is known emits HTML pointing at a prefix nothing was uploaded to. Leave empty to build yourself and pass `version`. |
-| `dist-path`               |          | —                                     | Path to the pre-built site directory to upload (e.g. ./dist). The caller builds it. Must be a directory inside the workspace. Required for a normal deploy; omit for a release copy (                                                                                                                                                                                                                                |
+| `dist-path`               |          | —                                     | Directory the deploy uploads (e.g. ./dist) — what `build-command` produces, or what you built yourself. Must be inside the workspace. Required unless the run only repoints an already-uploaded version.                                                                                                                                                                                                             |
 | `package-name`            |          | —                                     | CDN prefix / S3 key root / KV record prefix. Defaults to `name` from the repo-root package.json. Validated as an npm package name.                                                                                                                                                                                                                                                                                   |
 | `deployment-environments` |          | —                                     | Environments to repoint, as a JSON array or comma list (e.g. '["zone"]'). Empty array '[]' stages the bytes in S3 without touching any KV. Defaults to zone only — staging and production are promoted deliberately from a job that declares a GitHub environment.                                                                                                                                                   |
 | `percentage`              |          | `100`                                 | Rollout percentage (0-100) for the deployed version.                                                                                                                                                                                                                                                                                                                                                                 |
@@ -134,12 +135,12 @@ composite action's steps do not inherit `env:` set on the step that calls it.
 
 ### Outputs
 
-| Output    | Value                                                                                                                                               |
-| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version` | The deployed version (computed snapshot, or the `version` input).                                                                                   |
-| `s3-path` | The S3 key prefix that was uploaded: <package-name>/<version>.                                                                                      |
-| `cdn-url` | https://cdn.decentraland.org/<package-name>/<version> — where the worker serves the version from.                                                   |
-| `mode`    | What the S3 step did: upload \| copy \| skip. Set before the KV write, so it is readable from an `if: always()` step even when the run later fails. |
+| Output    | Value                                                                                                                                       |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version` | The deployed version (computed snapshot, or the `version` input).                                                                           |
+| `s3-path` | The S3 key prefix that was uploaded: <package-name>/<version>.                                                                              |
+| `cdn-url` | https://cdn.decentraland.org/<package-name>/<version> — where the worker serves the version from.                                           |
+| `mode`    | What the S3 step did: upload \| skip. Set before the KV write, so it is readable from an `if: always()` step even when the run later fails. |
 
 ## The three flows (matching the current pipeline)
 
@@ -147,7 +148,7 @@ Each is a job that checks out, then calls the action — see `decentraland/sites
 
 - **push → master**: build, then deploy `["zone"]` (the default). One upload, one KV repoint. Staging and production are promoted deliberately — see below.
 - **release published**: stage the build under the release tag — `build-command`, `version: ${{ github.event.release.tag_name }}`, `deployment-environments: '[]'`. The site is rebuilt with the tag as its version so its assets resolve from the tag prefix, uploaded there, and **no KV record changes**. Promotion is a separate, deliberate run.
-- **workflow_dispatch (manual deploy)**: pick an `environment` and the build to deploy by `version` **or** `commit` — e.g. promote what's on dev to stg. With `commit`, check the repo out at that commit (`actions/checkout` with `ref`) so the base version matches. Nothing is uploaded, so the action asks for no credentials at all — the broker checks the version is present and complete before it touches the rollout record.
+- **workflow_dispatch (promote)**: pick an `environment` and name the `version` to put live — e.g. promote what is on dev to stg. Copy the version from the deploy run that produced it; it cannot be reconstructed from a commit sha, because it carries the run id of the run that built it. Nothing is uploaded, so the action asks for no credentials at all — the broker checks the version is present and complete before it touches the rollout record.
 
 ## Runtime contract preserved
 
@@ -157,13 +158,11 @@ The CF Worker serves `https://cdn.decentraland.org/<prefix>/<version>/…` and s
 
 - **One deploy at a time per repo.** Set a workflow `concurrency` group (see Quick start) — the KV update is read-modify-write and Cloudflare KV has no compare-and-swap.
 - **Ordering.** The S3 step always runs before the rollout, and the broker refuses to publish a prefix without a completion marker, so KV never points at a half-written version. A failed run is safe to re-run (idempotent). A crashed upload leaves no completion marker, so the prefix stays re-openable and a re-run simply finishes it; a _finished_ version is immutable and a re-run is reported as a skip.
-- **Transient failures are retried.** Broker and Slack calls retry on a 429, any 5xx and network errors (3 attempts, exponential backoff), so a blip after the bytes land doesn't leave the deploy uploaded-but-not-repointed. S3 is retried by the aws-sdk itself, and the broker retries Cloudflare on its own side.
+- **Transient failures are retried.** Broker calls retry on a 429, any 5xx and network errors (3 attempts, exponential backoff), so a blip after the bytes land doesn't leave the deploy uploaded-but-not-repointed. S3 is retried by the aws-sdk itself, and the broker retries Cloudflare on its own side.
 - **Multi-env is not atomic.** Repointing several environments writes each KV namespace in turn; on a mid-way failure the action throws an aggregate naming which envs were already updated vs failed (no rollback — KV has none).
-- **Bad inputs are errors, not silent winners.** A duplicated environment; a `commit` that isn't a hex sha; a version containing a path separator; a `dist-path` that is the repo root, resolves outside the workspace, or holds a nested `.git`; a run that would upload nothing and publish nothing.
+- **Bad inputs are errors, not silent winners.** A duplicated environment; a version containing a path separator; a `dist-path` that is the repo root, resolves outside the workspace, or holds a nested `.git`; a run that would upload nothing and publish nothing.
 - **The KV key is not yours to choose.** It comes from `deploymentPath` in definitions. Which key a package may write decides whose site a deploy replaces, so accepting it as an input would let any authorised repository repoint another team's site.
 - **Package names must be lower-case** and at most 214 characters. S3 keys are case-sensitive, so an upper-case name would deploy to a prefix the worker never serves.
-- **Slack goes wherever the webhook points.** An incoming webhook posts to the channel it was installed on and ignores a `channel` field, so the message lands in `rollouts` only if the webhook was created there. Slack is observability: a failed notification warns, it never fails the deploy.
-- **The release copy runs in the broker.** `CopyObject` keeps the bytes inside S3, so a release needs no AWS credentials in the runner. It is resumable because API Gateway caps a call at 29 seconds and a site is a few thousand objects once the `.gzip`/`.br` variants are counted; the action drives the continuation to completion, and waits rather than failing when the source build is still uploading.
 - **`aws-sdk` v2.** `@dcl/cdn-uploader` takes a v2 `S3` client, built with the brokered credentials explicitly rather than letting the default chain find ambient `AWS_*` variables — there is no assume-role step populating those any more, and falling back to whatever the runner happens to have would be a quiet path to a wider credential than the broker granted. (v2 is in maintenance — a v3 shim is a future cleanup.)
 - **Pin your refs.** Third-party actions are pinned to commit SHAs. Pin this action to `@cdn-deploy-v1` — the floating major tag the release workflow moves on each stable `cdn-deploy-vX.Y.Z` tag (prereleases are skipped) — as the examples above do.
 
