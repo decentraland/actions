@@ -12,7 +12,7 @@ jest.mock("@actions/core", () => ({ warning: jest.fn(), info: jest.fn() }));
 
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { createObservability, statusSha } from "../src/github";
+import { createObservability, latestReleaseVersion, statusSha } from "../src/github";
 
 type RepoApi = {
   createDeployment: jest.Mock;
@@ -391,5 +391,131 @@ describe("when the deployment response carries no id", () => {
     await createObservability({ ...baseOptions, environments: ["zone"] }).start();
 
     expect(repos.createDeploymentStatus).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * This is what anchors every commit version: base = newest release, patch-bumped. Get it
+ * wrong and the build sorts below what is already live, the rollout is written, the job is
+ * green and nothing changes — which is exactly the failure that cost a deploy cycle.
+ *
+ * Note especially the error cases. Every one of them falls back to package.json, and
+ * package.json is routinely stale (`@dcl/sites` sat at 0.0.1 while serving 0.69.x), so a
+ * transient 500 here is indistinguishable from "this repo has never released" and quietly
+ * walks the version backwards.
+ */
+describe("when resolving the latest release", () => {
+  function mockReleases(releases: Array<Record<string, unknown>>): jest.Mock {
+    const listReleases = jest.fn().mockResolvedValue({ data: releases });
+    (github.getOctokit as jest.Mock).mockReturnValue({ rest: { repos: { listReleases } } });
+    return listReleases;
+  }
+
+  const release = (tag_name: string, extra: Record<string, unknown> = {}) => ({
+    tag_name,
+    draft: false,
+    prerelease: false,
+    ...extra,
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe("and the newest release by date is not the highest version", () => {
+    // `releases/latest` would answer 1.0.1 here: a patch published for an old line after a
+    // newer minor. Taking it would walk the base version backwards.
+    it("should take the highest semver, not the most recent", async () => {
+      mockReleases([release("1.0.1"), release("1.2.0"), release("1.1.0")]);
+
+      await expect(latestReleaseVersion({ token: "t" })).resolves.toEqual("1.2.0");
+    });
+  });
+
+  describe("and some releases are not publishable", () => {
+    it("should ignore drafts", async () => {
+      mockReleases([release("1.0.0"), release("9.9.9", { draft: true })]);
+
+      await expect(latestReleaseVersion({ token: "t" })).resolves.toEqual("1.0.0");
+    });
+
+    it("should ignore prereleases, matching what `latest` meant on npm", async () => {
+      mockReleases([release("1.0.0"), release("2.0.0-rc.1", { prerelease: true })]);
+
+      await expect(latestReleaseVersion({ token: "t" })).resolves.toEqual("1.0.0");
+    });
+  });
+
+  describe("and the tags are spelled differently", () => {
+    it("should accept a v prefix", async () => {
+      mockReleases([release("v1.4.0")]);
+
+      await expect(latestReleaseVersion({ token: "t" })).resolves.toEqual("1.4.0");
+    });
+
+    // Repositories accumulate tags like `deploy-2019`. One of those must not stop a deploy.
+    it("should skip a tag that is not semver rather than failing", async () => {
+      mockReleases([release("deploy-2019"), release("1.1.0")]);
+
+      await expect(latestReleaseVersion({ token: "t" })).resolves.toEqual("1.1.0");
+    });
+
+    it("should answer undefined when nothing is a usable version", async () => {
+      mockReleases([release("deploy-2019"), release("")]);
+
+      await expect(latestReleaseVersion({ token: "t" })).resolves.toBeUndefined();
+    });
+  });
+
+  describe("and the repository has never released", () => {
+    it("should answer undefined so the caller falls back to package.json", async () => {
+      mockReleases([]);
+
+      await expect(latestReleaseVersion({ token: "t" })).resolves.toBeUndefined();
+    });
+  });
+
+  describe("and there is no token", () => {
+    it("should not call the API at all", async () => {
+      const listReleases = mockReleases([release("1.0.0")]);
+
+      await latestReleaseVersion({});
+
+      expect(listReleases).not.toHaveBeenCalled();
+    });
+
+    it("should say why, since the fallback silently changes the version", async () => {
+      await latestReleaseVersion({});
+
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("contents: read"));
+    });
+  });
+
+  describe("and the API fails", () => {
+    beforeEach(() => {
+      (github.getOctokit as jest.Mock).mockReturnValue({
+        rest: { repos: { listReleases: jest.fn().mockRejectedValue(new Error("503 upstream")) } },
+      });
+    });
+
+    it("should fall back rather than fail the deploy", async () => {
+      await expect(latestReleaseVersion({ token: "t" })).resolves.toBeUndefined();
+    });
+
+    it("should warn with the reason attached", async () => {
+      await latestReleaseVersion({ token: "t" });
+
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("503 upstream"));
+    });
+  });
+
+  it("should ask for the repository it is running in", async () => {
+    const listReleases = mockReleases([release("1.0.0")]);
+
+    await latestReleaseVersion({ token: "t" });
+
+    expect(listReleases).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "decentraland", repo: "auth" }),
+    );
   });
 });
