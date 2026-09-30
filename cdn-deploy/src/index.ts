@@ -69,20 +69,20 @@ async function runBuild(command: string): Promise<void> {
 }
 
 /**
- * The lowest node the emitted bundle needs to execute.
+ * The lowest node this action accepts.
  *
- * Distinct from `engines.node` and `.nvmrc`, which state the toolchain this package is
- * developed and built with. The bundle asks for much less: nothing in `src/` uses an API
- * past es2020, and the heaviest dependency declares `>= 10`.
+ * A policy floor, deliberately above what the bundle technically needs: nothing in `src/`
+ * uses an API past es2020, and the heaviest dependency declares `>= 10`. It is also
+ * distinct from `engines.node` and `.nvmrc`, which state the toolchain this package is
+ * developed and built with rather than what the emitted artifact runs on.
  *
- * The distinction matters because a caller does not always choose the runtime. A job that
- * only repoints an already-uploaded version runs no build, so it runs no
- * `actions/setup-node`, and `node` on PATH is then the runner's own — 22 on ubuntu-latest.
- * A floor above that refuses a job whose author never set a version at all.
- *
- * 22 is the lowest version still receiving security patches, and every runner in service
- * is at or above it. A job holding write credentials for the production CDN should not run
- * on an unpatched runtime, which is the argument against dropping further.
+ * Two constraints meet at 22. It cannot go higher, because a caller does not always choose
+ * the runtime: a job that only repoints an already-uploaded version runs no build, so it
+ * runs no `actions/setup-node`, and `node` on PATH is then the runner's own — 22 on
+ * ubuntu-latest. A floor above that refuses a job whose author never set a version at all.
+ * It should not go lower, because 22 is the oldest release still receiving security
+ * patches, and a job holding write credentials for the production CDN should not run on an
+ * unpatched runtime.
  */
 export const MINIMUM_NODE_MAJOR = 22;
 
