@@ -33,6 +33,57 @@ defaults:
     working-directory: cdn-deploy
 
 jobs:
+  # The bundle is built on `.nvmrc` but runs on whatever the calling job has on PATH, which
+  # is the runner's own Node when that job sets up none. Building and testing on one
+  # version therefore says nothing about the versions it actually executes on.
+  runtime-floor:
+    name: node ${{ matrix.node || 'from the runner' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          # The declared floor, and one above it.
+          - "22"
+          - "24"
+          # Whatever the runner ships, set up by nothing. This is the case the floor
+          # exists for -- a job that only repoints runs no build, so it runs no
+          # `actions/setup-node` -- and the only one that can move without a commit here.
+          - ""
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        if: matrix.node != ''
+        with:
+          node-version: ${{ matrix.node }}
+
+      # No install: dist/ is self-contained, which is the point of shipping a bundle.
+      #
+      # An invalid input makes readInputs() throw immediately after the version guard and
+      # before anything reaches the network. Asserting that exact error proves the bundle
+      # loaded and the guard accepted this runtime. Running with no inputs at all would
+      # instead default every one of them and carry a fabricated version into a real
+      # rollout against the production broker.
+      - name: Run the committed bundle
+        env:
+          INPUT_PERCENTAGE: not-a-number
+        run: |
+          set -uo pipefail
+          actual=$(node --version)
+          output=$(node dist/index.js 2>&1) && status=0 || status=$?
+          echo "$output"
+
+          if grep -q 'needs Node' <<<"$output"; then
+            echo "::error::The bundle refuses $actual, which is at or above the declared floor." >&2
+            exit 1
+          fi
+          if [ "$status" -eq 0 ] || ! grep -q 'Invalid percentage "not-a-number"' <<<"$output"; then
+            echo "::error::Expected the run to stop on its input validation; it did not." >&2
+            exit 1
+          fi
+          echo "Runs on $actual."
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:

@@ -13,7 +13,7 @@ const root = path.join(__dirname, "..");
  */
 describe("when the job's node is older than the bundle needs", () => {
   it("should refuse before doing any work", () => {
-    expect(() => assertSupportedNode("v18.20.4")).toThrow(/needs Node 20 or newer/);
+    expect(() => assertSupportedNode("v18.20.4")).toThrow(/needs Node 22 or newer/);
   });
 
   it("should name the version it found, so the log says what to change", () => {
@@ -39,12 +39,9 @@ describe("when the job's node is older than the bundle needs", () => {
 });
 
 describe("when the job's node is new enough", () => {
-  it.each([["v20.11.0"], ["v22.23.2"], ["v24.18.0"], ["v25.1.0"]])(
-    "should accept %s",
-    (version) => {
-      expect(() => assertSupportedNode(version as string)).not.toThrow();
-    },
-  );
+  it.each([["v22.23.2"], ["v24.18.0"], ["v25.1.0"]])("should accept %s", (version) => {
+    expect(() => assertSupportedNode(version as string)).not.toThrow();
+  });
 
   it("should accept the node actually running this suite", () => {
     expect(() => assertSupportedNode()).not.toThrow();
@@ -59,7 +56,7 @@ describe("when the job's node is new enough", () => {
 describe("when the supported node version is declared", () => {
   it("should not demand the build toolchain's version at runtime", () => {
     const engines = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).engines;
-    const buildMajor = Number.parseInt(engines.node.replace(/[^0-9]/g, ""), 10);
+    const buildMajor = Number.parseInt(engines.node.match(/\d+/)![0], 10);
 
     expect(MINIMUM_NODE_MAJOR).toBeLessThanOrEqual(buildMajor);
   });

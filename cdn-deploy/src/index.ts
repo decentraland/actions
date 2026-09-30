@@ -69,31 +69,31 @@ async function runBuild(command: string): Promise<void> {
 }
 
 /**
- * The lowest node the emitted bundle needs to execute.
+ * The lowest node this action accepts.
  *
- * Distinct from `engines.node` and `.nvmrc`, which state the toolchain this package is
- * developed and built with. The bundle asks for much less: nothing in `src/` uses an API
- * past es2020, and the heaviest dependency declares `>= 10`.
+ * A policy floor, deliberately above what the bundle technically needs: nothing in `src/`
+ * uses an API past es2020, and the heaviest dependency declares `>= 10`. It is also
+ * distinct from `engines.node` and `.nvmrc`, which state the toolchain this package is
+ * developed and built with rather than what the emitted artifact runs on.
  *
- * The distinction matters because a caller does not always choose the runtime. A job that
- * only repoints an already-uploaded version runs no build, so it runs no
- * `actions/setup-node`, and `node` on PATH is then the runner's own — 22 on ubuntu-latest.
- * A floor above that refuses a job whose author never set a version at all.
- *
- * 20 keeps the check meaningful for a genuinely ancient runtime without reaching any
- * runner in service.
+ * Two constraints meet at 22. It cannot go higher, because a caller does not always choose
+ * the runtime: a job that only repoints an already-uploaded version runs no build, so it
+ * runs no `actions/setup-node`, and `node` on PATH is then the runner's own — 22 on
+ * ubuntu-latest. A floor above that refuses a job whose author never set a version at all.
+ * It should not go lower, because 22 is the oldest release still receiving security
+ * patches, and a job holding write credentials for the production CDN should not run on an
+ * unpatched runtime.
  */
-export const MINIMUM_NODE_MAJOR = 20;
+export const MINIMUM_NODE_MAJOR = 22;
 
 /**
- * Refuse a runtime older than the bundle was built for.
+ * Refuse a runtime the bundle cannot rely on.
  *
- * The action runs as `node "$GITHUB_ACTION_PATH/dist/index.js"`, and that `node` resolves
- * from PATH -- so it is whatever version the caller's `actions/setup-node` installed, not
- * anything this repository controls. `engines` is not enforced for a bare `node`
- * invocation, so a job pinning an older node runs this bundle anyway and finds out when
- * some dependency reaches for an API that is not there. That failure names a library, not
- * the cause.
+ * The action runs as `node "$GITHUB_ACTION_PATH/dist/index.js"`, so `node` resolves from
+ * PATH: whatever `actions/setup-node` installed if the job runs one, and the runner's own
+ * otherwise. `engines` is advisory for a bare `node` invocation, so without this a job on
+ * an older runtime runs the bundle anyway and fails wherever a dependency first reaches
+ * for an API that is not there -- naming a library rather than the cause.
  *
  * Checked first, before inputs, so the message is not buried under a validation error.
  */
@@ -104,7 +104,8 @@ export function assertSupportedNode(version: string = process.version): void {
     throw new Error(
       `This action needs Node ${MINIMUM_NODE_MAJOR} or newer; this job is running ${version}. ` +
         "Node comes from whatever is on PATH — `actions/setup-node` if the job runs one, " +
-        "otherwise the runner's own. Add or raise `actions/setup-node` in the calling job.",
+        `otherwise the runner's own. Set \`node-version: ${MINIMUM_NODE_MAJOR}.x\` (or newer) on ` +
+        "`actions/setup-node` in the calling job.",
     );
   }
 }
@@ -120,12 +121,9 @@ async function run(): Promise<void> {
   // alone, since it carries the run id of the run that produced it.
   const sha = github.context.sha;
 
-  // Lazy, deliberately. Computing it eagerly meant every run had to resolve a base
-  // version, including a promotion that supplies `version` and checks nothing out — which
-  // died in readInputs before it ever reached the broker.
-  // Still lazy, and now async: resolving the base means asking GitHub for the newest
-  // release. A promotion supplies `version` and checks nothing out, so it must not pay for
-  // that call, and a promotion has no package.json to resolve one from.
+  // Lazy, and async: resolving the base means asking GitHub for the newest release. A
+  // promotion supplies `version` and checks nothing out, so it has no package.json to
+  // resolve a base from and must not pay for the call.
   let resolved: string | undefined;
   const commitVersion = async (): Promise<string> => {
     if (resolved) return resolved;
@@ -260,12 +258,10 @@ async function run(): Promise<void> {
       // production serves, in place, with no rollout call and nothing to approve, which is
       // precisely what the immutability freeze exists to stop.
       //
-      // There is no "is it already there?" input: the broker refuses to mint for a
-      // published version, and that refusal is handled below.
-      // A published version is immutable, and the broker refuses to write one rather than
-      // trusting the caller to skip. That refusal is the authoritative "already deployed"
-      // answer on both paths, so it is a skip and not a failure -- re-running a deploy
-      // stays idempotent, it just cannot overwrite what is already live.
+      // There is no "is it already there?" input. A published version is immutable and the
+      // broker refuses to write one, so that refusal is the authoritative "already
+      // deployed" answer -- handled below as a skip rather than a failure, which is what
+      // keeps re-running a deploy idempotent.
       const isAlreadyPublished = (e: unknown) =>
         e instanceof BrokerError && e.code === "version_already_published";
 

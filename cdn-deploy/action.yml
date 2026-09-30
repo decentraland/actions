@@ -51,7 +51,7 @@ runs:
     # bakes its asset base URL from it -- and splitting that across composite steps meant
     # the value had to cross a boundary through $GITHUB_ENV, which is job-wide and writable
     # by anything the build runs. It also duplicated this env block verbatim, with one
-    # deliberate difference that broke a deploy and then needed its own test to guard.
+    # deliberate difference between them, which nothing but a test would catch.
     - name: Deploy to CDN and set rollout
       id: deploy
       shell: bash
