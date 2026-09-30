@@ -22,7 +22,7 @@ inputs:
     description: "Base version the deployed version is built from. Defaults to `version` in the repo-root package.json; set it when the repo isn't checked out."
     required: false
   deployment-environments:
-    description: 'Environments to repoint, as a JSON array or comma list (e.g. ''["zone"]''). Empty array ''[]'' stages the bytes in S3 without touching any KV. Defaults to zone only — staging and production are promoted deliberately from a job that declares a GitHub environment. Mutually exclusive with `deployment-environment`.'
+    description: 'Environments to repoint, as a JSON array or comma list (e.g. ''["zone"]''). Empty array ''[]'' stages the bytes in S3 without touching any KV. Defaults to zone only — staging and production are promoted deliberately from a job that declares a GitHub environment.'
     required: false
   force:
     description: "Fail instead of skipping when the target version is already published. Nothing can overwrite a published version — the broker refuses — so this turns a silent 'already there' into a loud error for a run that meant to write new bytes."
@@ -41,7 +41,7 @@ inputs:
     required: false
     default: "true"
   version:
-    description: "Target version. Defaults to the computed commit version. Provide it to deploy under a specific version (e.g. a release tag), or alone to repoint the KV at an already-uploaded version. A target that is absent from S3 is an error unless `dist-path`, `source-version` or `copy-from-commit` says how to fill it."
+    description: "Target version. Defaults to the computed commit version. Provide it to deploy under a specific version (e.g. a release tag), or alone to repoint the KV at an already-uploaded version. A target that is absent from S3 is an error unless `dist-path` or `copy-from-commit` says how to fill it."
     required: false
   create-github-deployment:
     description: "Create a GitHub deployment + commit status for observability. Needs `permissions: { deployments: write, statuses: write }`."

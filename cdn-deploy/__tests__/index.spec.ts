@@ -121,6 +121,13 @@ describe("when running the cdn-deploy action", () => {
 
     readInputsMock = readInputs as jest.MockedFunction<typeof readInputs>;
     folderHasIndexHtmlMock = folderHasIndexHtml as jest.MockedFunction<typeof folderHasIndexHtml>;
+    // Defaulted here rather than per-describe. `jest.clearAllMocks()` clears calls but NOT
+    // implementations, and the config sets neither resetMocks nor restoreMocks -- so a
+    // describe that set `dist-path` without stubbing this one passed only on the stub a
+    // sibling describe had left behind. Six tests were in that state, `--randomize` failed
+    // one seed in three, and the single test pinning the resolve->deploy version handoff
+    // was one of them. A describe that wants the opposite still overrides it.
+    folderHasIndexHtmlMock.mockReturnValue(true);
     uploadFolderToS3Mock = uploadFolderToS3 as jest.MockedFunction<typeof uploadFolderToS3>;
     writeCompletionMarkerMock = writeCompletionMarker as jest.MockedFunction<
       typeof writeCompletionMarker
