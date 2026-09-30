@@ -81269,6 +81269,11 @@ async function run() {
     // run that failed before the S3 step ran at all.
     let s3Action = "not-attempted";
     try {
+        // Deferred to here on purpose: this is the first point at which the folder is supposed
+        // to exist. When `build-command` is set it is the build's output, so validating it in
+        // readInputs meant failing before the build that creates it.
+        if (inputs.distPath)
+            (0, inputs_1.validateDistPath)(inputs.distPath);
         if (inputs.distPath && !(0, inputs_1.folderHasIndexHtml)(inputs.distPath)) {
             throw new Error(`No index.html found at the root of "${inputs.distPath}". The build looks empty or ` +
                 "misconfigured.");
@@ -81827,8 +81832,11 @@ function readInputs() {
     // dist-path is optional: copy/repoint flows don't upload from disk. When
     // provided it must be a real directory inside the workspace.
     const distPath = core.getInput("dist-path");
-    if (distPath)
-        validateDistPath(distPath);
+    // NOT validated here. `validateDistPath` touches the filesystem, and when the action
+    // owns the build the folder does not exist yet -- it is the build's output. Checking it
+    // at input-reading time failed the run before the build that would have created it, and
+    // the error named the folder rather than the ordering. The check runs in index.ts once
+    // the bytes are supposed to be there.
     // Identity (package name + base version) comes from the repo-root package.json
     // — the source of truth — NOT the upload folder. A built `./dist` may have no
     // package.json, and copy/repoint flows have no folder at all; reading the root

@@ -4,7 +4,12 @@ import { BrokerError, createBrokerClient } from "../src/broker";
 import { createBrokeredCredentials } from "../src/credentials";
 import { createObservability } from "../src/github";
 import { reportFailure, run } from "../src/index";
-import { folderHasIndexHtml, readInputs, validateVersionShape } from "../src/inputs";
+import {
+  folderHasIndexHtml,
+  readInputs,
+  validateDistPath,
+  validateVersionShape,
+} from "../src/inputs";
 import { uploadFolderToS3, writeCompletionMarker } from "../src/s3";
 import { ActionInputs } from "../src/types";
 
@@ -25,6 +30,10 @@ jest.mock("../src/inputs", () => ({
   ...jest.requireActual("../src/inputs"),
   readInputs: jest.fn(),
   folderHasIndexHtml: jest.fn(),
+  // Mocked so WHEN it runs is observable. Left real it silently passes, because the
+  // action's own `dist/` exists relative to the test's cwd — which is exactly why the
+  // ordering regression went unnoticed twice.
+  validateDistPath: jest.fn(),
 }));
 jest.mock("../src/s3");
 jest.mock("../src/broker", () => ({
@@ -829,6 +838,48 @@ describe("when running the cdn-deploy action", () => {
       await run().catch(() => undefined);
 
       expect(readInputsMock).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * The regression this exists for: `dist-path` is the build's OUTPUT when the action owns
+   * the build, so validating that it exists while reading inputs failed the run one step
+   * before the build that creates it — twice, in two different shapes. The unit tests could
+   * not catch it because readInputs is mocked here and the wiring test only reads YAML.
+   */
+  describe("and the build is what produces dist-path", () => {
+    beforeEach(() => {
+      inputs = buildInputs({
+        buildCommand: "npm run build",
+        distPath: "./dist",
+        environments: ["zone"],
+      });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant());
+    });
+
+    it("should not check the folder before the build has run", async () => {
+      const order: string[] = [];
+      (spawn as unknown as jest.Mock).mockImplementation(() => {
+        order.push("build");
+        return {
+          on: (event: string, cb: (code: number) => void) => {
+            if (event === "close") setImmediate(() => cb(0));
+          },
+        };
+      });
+      (validateDistPath as jest.Mock).mockImplementation(() => {
+        order.push("check-folder");
+        return "./dist";
+      });
+      folderHasIndexHtmlMock.mockImplementation(() => {
+        order.push("check-index");
+        return true;
+      });
+
+      await run();
+
+      expect(order).toEqual(["build", "check-folder", "check-index"]);
     });
   });
 });

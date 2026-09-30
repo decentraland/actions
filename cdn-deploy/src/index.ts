@@ -4,6 +4,7 @@ import {
   DEFAULT_CDN_BASE_URL,
   DEFAULT_ROLLOUT_NAME,
   folderHasIndexHtml,
+  validateDistPath,
   readInputs,
 } from "./inputs";
 import { computeVersion, resolveBaseVersion } from "./version";
@@ -192,6 +193,11 @@ async function run(): Promise<void> {
   // run that failed before the S3 step ran at all.
   let s3Action: S3Action | "not-attempted" = "not-attempted";
   try {
+    // Deferred to here on purpose: this is the first point at which the folder is supposed
+    // to exist. When `build-command` is set it is the build's output, so validating it in
+    // readInputs meant failing before the build that creates it.
+    if (inputs.distPath) validateDistPath(inputs.distPath);
+
     if (inputs.distPath && !folderHasIndexHtml(inputs.distPath)) {
       throw new Error(
         `No index.html found at the root of "${inputs.distPath}". The build looks empty or ` +

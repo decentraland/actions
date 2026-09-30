@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { readInputs } from "../src/inputs";
+import { validateDistPath } from "../src/inputs";
 
 jest.mock("@actions/core", () => ({
   getInput: (name: string) => process.env[`INPUT_${name.toUpperCase().replace(/-/g, "_")}`] || "",
@@ -56,26 +56,32 @@ describe("when the build folder contains a symlink pointing outside it", () => {
     );
     fs.symlinkSync(path.join(workspace, ".git"), path.join(workspace, "dist", "assets"));
 
-    expect(() => readInputs()).toThrow(/points outside it/);
+    expect(() => validateDistPath(path.join(workspace, "dist"), workspace)).toThrow(
+      /points outside it/,
+    );
   });
 
   it("should refuse a link to an absolute path elsewhere on the runner", () => {
     fs.symlinkSync("/etc", path.join(workspace, "dist", "etc"));
 
-    expect(() => readInputs()).toThrow(/points outside it/);
+    expect(() => validateDistPath(path.join(workspace, "dist"), workspace)).toThrow(
+      /points outside it/,
+    );
   });
 
   it("should refuse a link nested deeper in the tree", () => {
     fs.mkdirSync(path.join(workspace, "dist", "a", "b"), { recursive: true });
     fs.symlinkSync(workspace, path.join(workspace, "dist", "a", "b", "up"));
 
-    expect(() => readInputs()).toThrow(/points outside it/);
+    expect(() => validateDistPath(path.join(workspace, "dist"), workspace)).toThrow(
+      /points outside it/,
+    );
   });
 
   it("should name the offending link so it can be found", () => {
     fs.symlinkSync("/etc/passwd", path.join(workspace, "dist", "pw"));
 
-    expect(() => readInputs()).toThrow(/pw/);
+    expect(() => validateDistPath(path.join(workspace, "dist"), workspace)).toThrow(/pw/);
   });
 });
 
@@ -87,7 +93,7 @@ describe("when the build folder contains ordinary symlinks", () => {
       path.join(workspace, "dist", "alias.js"),
     );
 
-    expect(() => readInputs()).not.toThrow();
+    expect(() => validateDistPath(path.join(workspace, "dist"), workspace)).not.toThrow();
   });
 
   // It publishes nothing, and the uploader skips it.
@@ -97,10 +103,10 @@ describe("when the build folder contains ordinary symlinks", () => {
       path.join(workspace, "dist", "broken.js"),
     );
 
-    expect(() => readInputs()).not.toThrow();
+    expect(() => validateDistPath(path.join(workspace, "dist"), workspace)).not.toThrow();
   });
 
   it("should allow a folder with no links at all", () => {
-    expect(() => readInputs()).not.toThrow();
+    expect(() => validateDistPath(path.join(workspace, "dist"), workspace)).not.toThrow();
   });
 });

@@ -310,7 +310,11 @@ export function readInputs(): ActionInputs {
   // dist-path is optional: copy/repoint flows don't upload from disk. When
   // provided it must be a real directory inside the workspace.
   const distPath = core.getInput("dist-path");
-  if (distPath) validateDistPath(distPath);
+  // NOT validated here. `validateDistPath` touches the filesystem, and when the action
+  // owns the build the folder does not exist yet -- it is the build's output. Checking it
+  // at input-reading time failed the run before the build that would have created it, and
+  // the error named the folder rather than the ordering. The check runs in index.ts once
+  // the bytes are supposed to be there.
 
   // Identity (package name + base version) comes from the repo-root package.json
   // — the source of truth — NOT the upload folder. A built `./dist` may have no

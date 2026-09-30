@@ -797,23 +797,24 @@ describe("when reading the action inputs", () => {
     });
   });
 
-  describe("and a dist-path pointing at the repository root is provided", () => {
+  /**
+   * readInputs deliberately does NOT touch the filesystem for dist-path. When the action
+   * owns the build, the folder is the build's OUTPUT — checking it while reading inputs
+   * failed the run before the build that would have created it, and blamed the folder
+   * rather than the ordering. `validateDistPath` still does every one of these checks; it
+   * is called once the bytes are supposed to be there. Its own tests are above.
+   */
+  describe("and a dist-path that does not exist yet is provided", () => {
     beforeEach(() => {
-      setInputs({ "dist-path": workspace });
+      setInputs({ "dist-path": path.join(workspace, "not-built-yet") });
     });
 
-    it("should throw before anything is published to the public bucket", () => {
-      expect(() => readInputs()).toThrow("dist-path is the repository root");
-    });
-  });
-
-  describe("and a dist-path that does not exist is provided", () => {
-    beforeEach(() => {
-      setInputs({ "dist-path": path.join(workspace, "missing") });
+    it("should read it without checking whether it is there", () => {
+      expect(() => readInputs()).not.toThrow();
     });
 
-    it("should throw saying the path does not exist", () => {
-      expect(() => readInputs()).toThrow("does not exist");
+    it("should still return it, for the caller to validate later", () => {
+      expect(readInputs().distPath).toBe(path.join(workspace, "not-built-yet"));
     });
   });
 
