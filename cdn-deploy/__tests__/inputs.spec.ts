@@ -7,6 +7,7 @@ import {
   DEFAULT_ROLLOUT_NAME,
   folderHasIndexHtml,
   isEnvironment,
+  normaliseVersion,
   parseBooleanInput,
   parseEnvironments,
   parsePercentage,
@@ -837,5 +838,41 @@ describe("when reading the action inputs", () => {
     it("should return a zero percentage rather than coercing it to 100", () => {
       expect(result.percentage).toBe(0);
     });
+  });
+});
+
+describe("when the version input carries the `v` a git tag usually has", () => {
+  /**
+   * The version is both the S3 key's second segment and the value the build bakes its asset
+   * base URL from, so the two have to be the same string. A workflow passing a release tag
+   * straight through hands over whatever the tag is called, while a build seeding its
+   * manifest with `npm version` gets npm's normalised form.
+   */
+  it("should strip it so the prefix matches what the build emits", () => {
+    expect(normaliseVersion("v1.2.3")).toEqual("1.2.3");
+  });
+
+  it("should strip it from a commit build too", () => {
+    expect(normaliseVersion("v8.25.1-36767830652.commit-b4adeb6")).toEqual(
+      "8.25.1-36767830652.commit-b4adeb6",
+    );
+  });
+
+  it("should leave an already-bare version untouched", () => {
+    expect(normaliseVersion("8.25.1-36767830652.commit-b4adeb6")).toEqual(
+      "8.25.1-36767830652.commit-b4adeb6",
+    );
+  });
+
+  /**
+   * A version is not required to be semver -- it is required to be a safe S3 key segment.
+   * Anything semver cannot parse is handed on unchanged for the shape check to judge.
+   */
+  it("should pass a non-semver version through for the shape check", () => {
+    expect(normaliseVersion("not-a-version")).toEqual("not-a-version");
+  });
+
+  it("should not strip a `v` that is part of the name rather than a prefix", () => {
+    expect(normaliseVersion("version-one")).toEqual("version-one");
   });
 });

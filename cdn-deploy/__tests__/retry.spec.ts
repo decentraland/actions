@@ -1,4 +1,4 @@
-import { isRetryable, Sleep, withRetry } from "../src/retry";
+import { isRetryable, MAX_RETRY_DELAY_MS, Sleep, withRetry } from "../src/retry";
 
 /** Builds an error shaped like an HTTP failure from fetch-based clients. */
 function httpError(message: string, status: number): Error & { status: number } {
@@ -415,5 +415,92 @@ describe("when the broker reports a rollout already in progress", () => {
 
   it("should still refuse to retry an ordinary refusal", () => {
     expect(isRetryable({ status: 403, code: "repository_mismatch" })).toBe(false);
+  });
+});
+
+describe("when a retryable failure carries a Retry-After", () => {
+  /** Captures the waits instead of performing them, so the schedule is observable. */
+  function recordingSleep(): { waits: number[]; sleep: Sleep } {
+    const waits: number[] = [];
+    return { waits, sleep: async (ms: number) => void waits.push(ms) };
+  }
+
+  function lockedError(retryAfterSeconds?: number) {
+    return Object.assign(new Error("another rollout holds the lease"), {
+      status: 409,
+      code: "rollout_in_progress",
+      retryAfterSeconds,
+    });
+  }
+
+  /**
+   * The broker sets Retry-After from how long the lease it is holding has left. Waiting the
+   * backoff schedule instead spends the whole budget in about a second and a half, which
+   * fails a job for a rollout the server was about to let through.
+   */
+  it("should wait what the broker asked for when that is longer than the backoff", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 3) throw lockedError(5);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).resolves.toEqual("done");
+
+    expect(waits).toEqual([5000, 5000]);
+  });
+
+  it("should keep the backoff when it already exceeds the requested wait", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 3) throw lockedError(0.1);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep, baseDelayMs: 500 })).resolves.toEqual("done");
+
+    expect(waits).toEqual([500, 1000]);
+  });
+
+  /** A header is attacker-influenced in principle and mistyped in practice. */
+  it("should cap an absurd wait rather than parking the job", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 2) throw lockedError(86_400);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).resolves.toEqual("done");
+
+    expect(waits).toEqual([MAX_RETRY_DELAY_MS]);
+  });
+
+  it("should fall back to the backoff when no Retry-After is present", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 3) throw lockedError(undefined);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep, baseDelayMs: 500 })).resolves.toEqual("done");
+
+    expect(waits).toEqual([500, 1000]);
+  });
+
+  it("should ignore a negative or non-numeric value", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 2) throw lockedError(-1);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep, baseDelayMs: 500 })).resolves.toEqual("done");
+
+    expect(waits).toEqual([500]);
   });
 });

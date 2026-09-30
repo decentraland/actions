@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as core from "@actions/core";
+import * as semver from "semver";
 import { ActionInputs, DEFAULT_BROKER_URL, DEFAULT_OIDC_AUDIENCE, Environment } from "./types";
 
 export const ENVIRONMENTS: Environment[] = ["zone", "today", "org"];
@@ -94,6 +95,23 @@ export function validatePackageName(packageName: string): string {
  * that only become valid once the suffix is added.
  */
 const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+
+/**
+ * Drop the `v` a git tag often carries, so the deployed prefix matches the bundle.
+ *
+ * The version becomes the S3 key's second segment AND the version the build bakes its asset
+ * base URL from. Those have to be the same string. A caller passing a release tag straight
+ * through (`version: ${{ github.event.release.tag_name }}`) hands over whatever the tag is
+ * called, while a build that seeds its manifest with `npm version` gets npm's normalised
+ * form -- so a `v1.2.3` tag uploads to `/v1.2.3/` and serves HTML asking for `/1.2.3/`.
+ *
+ * Only a valid semver string is rewritten. Anything else is returned untouched for
+ * `validateVersionShape` to judge, because a version is not required to be semver -- it is
+ * required to be a safe S3 key segment.
+ */
+export function normaliseVersion(version: string): string {
+  return semver.clean(version) ?? version;
+}
 
 export function validateVersionShape(version: string, source: string): string {
   if (!VERSION_RE.test(version)) {
@@ -353,9 +371,9 @@ export function readInputs(): ActionInputs {
   // command and reports success.
   const buildCommand = core.getInput("build-command").trim() || undefined;
 
-  const versionInput = core.getInput("version");
+  const versionInput = core.getInput("version").trim();
   const version = versionInput
-    ? validateVersionShape(versionInput, "the `version` input")
+    ? validateVersionShape(normaliseVersion(versionInput), "the `version` input")
     : undefined;
 
   return {
