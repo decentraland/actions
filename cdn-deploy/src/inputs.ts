@@ -73,6 +73,39 @@ export function validatePackageName(packageName: string): string {
   return packageName;
 }
 
+/**
+ * The other half of the S3 key.
+ *
+ * `validatePackageName` above guards the first segment precisely because a PR can edit the
+ * file it comes from. The version is the second segment of the same key and had no
+ * equivalent: `resolveBaseVersion` returns the package.json `version` verbatim whenever
+ * there is no release to anchor on — which is any repository that has never released, and
+ * also every transient failure of the releases API. A version of
+ * `../../@dcl/other-site/9.9.9` produced the key
+ * `@dcl/mine/../../@dcl/other-site/9.9.9-…`, and neither the uploader nor the marker write
+ * normalises it: both build the key by string concatenation.
+ *
+ * The broker refuses such a version today, so this is defence in depth rather than the only
+ * control. It is worth having anyway: the broker is a different repository, its rules are
+ * not visible from here, and this action already validates the segment it can.
+ *
+ * Deliberately a shape check, not a semver check. The base version is the caller's to pick
+ * and `computeVersion` appends to it; requiring semver here would reject legitimate bases
+ * that only become valid once the suffix is added.
+ */
+const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+
+export function validateVersionShape(version: string, source: string): string {
+  if (!VERSION_RE.test(version)) {
+    throw new Error(
+      `Invalid version "${version}" from ${source}. A version becomes the second segment of ` +
+        "the S3 key, so it may contain only letters, digits, dot, underscore, plus and hyphen " +
+        "— no path separators, traversal or whitespace.",
+    );
+  }
+  return version;
+}
+
 /** Parse the environments input — JSON array (`["zone","today"]`) or comma list. Empty string -> []. */
 export function parseEnvironments(raw: string): Environment[] {
   const trimmed = raw.trim();
@@ -302,8 +335,13 @@ export function readInputs(): ActionInputs {
   // outright; package.json is only a FLOOR, because the newest release is the real anchor.
   // Collapsing them is what let `@dcl/sites` build `0.0.1-…` while serving 0.69.x — its
   // package.json had been stale for 69 minor versions, and nothing read it until now.
-  const baseVersion = core.getInput("base-version") || undefined;
-  const packageVersion = pkg.version || undefined;
+  const baseVersionInput = core.getInput("base-version");
+  const baseVersion = baseVersionInput
+    ? validateVersionShape(baseVersionInput, "the `base-version` input")
+    : undefined;
+  const packageVersion = pkg.version
+    ? validateVersionShape(pkg.version, "the repo-root package.json")
+    : undefined;
 
   // `deployment-environments` already accepts a bare name, a comma list or a JSON array,
   // so `org` and `["zone","today"]` are both valid and a separate singular input bought
@@ -312,7 +350,10 @@ export function readInputs(): ActionInputs {
   const environments: Environment[] =
     envInput !== "" ? parseEnvironments(envInput) : DEFAULT_ENVIRONMENTS; // may be [] (stage)
 
-  const version = core.getInput("version") || undefined;
+  const versionInput = core.getInput("version");
+  const version = versionInput
+    ? validateVersionShape(versionInput, "the `version` input")
+    : undefined;
 
   return {
     distPath,

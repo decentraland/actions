@@ -85,6 +85,7 @@ runs:
     # exported as CDN_DEPLOY_VERSION and written into package.json, both read by the
     # prebuild that computes VITE_BASE_URL.
     - name: Resolve the deploy version
+      id: resolve
       if: ${{ inputs.build-command != '' }}
       shell: bash
       run: node "$GITHUB_ACTION_PATH/dist/index.js"
@@ -120,6 +121,17 @@ runs:
       shell: bash
       run: node "$GITHUB_ACTION_PATH/dist/index.js"
       env:
+        # Both pinned, and handed over as a step OUTPUT rather than through the job
+        # environment. `core.exportVariable` writes $GITHUB_ENV, which is job-wide and
+        # writable by anything the build runs -- a postinstall in any transitive dependency
+        # could set CDN_DEPLOY_STAGE=resolve and make this step return early, exit 0, and
+        # report a deploy that never happened. Step-level env outranks the job environment,
+        # so these two cannot be overridden from inside the build.
+        #
+        # Empty when there is no build-command: the resolve step is skipped, the output is
+        # "", and the deploy resolves the version itself.
+        CDN_DEPLOY_STAGE: deploy
+        CDN_DEPLOY_VERSION: ${{ steps.resolve.outputs.version }}
         INPUT_DIST-PATH: ${{ inputs.dist-path }}
         INPUT_COPY-FROM-COMMIT: ${{ inputs.copy-from-commit }}
         INPUT_COMMIT: ${{ inputs.commit }}

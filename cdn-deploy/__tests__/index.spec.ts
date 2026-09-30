@@ -1005,4 +1005,99 @@ describe("when running the cdn-deploy action", () => {
       );
     });
   });
+
+  /**
+   * The guard at src/index.ts carries the loudest comment in the file — a refusal during a
+   * mid-upload credential REFRESH must not be swallowed as "already published, nothing to
+   * do" — and had no test at all. Moving the upload inside the `try` above it left all 343
+   * tests green, which is exactly how a half-written prefix gets rolled out and reported as
+   * a success.
+   */
+  describe("and the version is published by another run mid-upload", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ distPath: "./dist", environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+      folderHasIndexHtmlMock.mockReturnValue(true);
+      broker.requestCredentials.mockResolvedValue({
+        bucket: "cdn-test-bucket",
+        region: "us-east-1",
+        prefix: "@dcl/auth-site/1.0.0/",
+        credentials: { accessKeyId: "AKIA", secretAccessKey: "s", sessionToken: "t" },
+      });
+      // The refusal arrives from the upload itself, not from the initial mint: this is the
+      // credential refresh being turned down part-way through writing the prefix.
+      uploadFolderToS3Mock.mockRejectedValue(
+        new BrokerError("version_already_published", 409, "already published", {}),
+      );
+    });
+
+    it("should fail rather than report a skip", async () => {
+      await expect(run()).rejects.toThrow(/already published/);
+    });
+
+    it("should never roll out over a half-written prefix", async () => {
+      await run().catch(() => undefined);
+
+      expect(broker.rollout).not.toHaveBeenCalled();
+    });
+
+    it("should not write the completion marker", async () => {
+      await run().catch(() => undefined);
+
+      expect(writeCompletionMarker).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * A run with nothing to upload and nowhere to publish used to be reported as a success,
+   * with a log line asserting "bytes are in S3" that nothing had verified. It is the shape
+   * of a release job that lost its dist-path.
+   */
+  describe("and the run has nothing to write and nowhere to publish", () => {
+    beforeEach(() => {
+      inputs = buildInputs({
+        version: "1.2.3",
+        distPath: "",
+        copyFromCommit: false,
+        environments: [],
+      });
+      readInputsMock.mockReturnValue(inputs);
+    });
+
+    it("should refuse instead of reporting a successful no-op", async () => {
+      await expect(run()).rejects.toThrow(/would do nothing/);
+    });
+
+    it("should name both of the things that could fix it", async () => {
+      await expect(run()).rejects.toThrow(/dist-path[\s\S]*deployment-environments/);
+    });
+  });
+
+  /**
+   * The version is the second segment of the S3 key. `validatePackageName` guards the first
+   * precisely because a PR can edit the file it comes from; this guards the other half.
+   */
+  describe("and a version arrives with a path in it", () => {
+    afterEach(() => {
+      delete process.env.CDN_DEPLOY_VERSION;
+    });
+
+    it("should refuse a handed-over version that climbs out of the package", async () => {
+      process.env.CDN_DEPLOY_VERSION = "../../@dcl/other-site/9.9.9";
+      inputs = buildInputs({ version: undefined, distPath: "./dist", environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+
+      await expect(run()).rejects.toThrow(/no path separators/);
+    });
+
+    it("should not mint credentials for it", async () => {
+      process.env.CDN_DEPLOY_VERSION = "../../@dcl/other-site/9.9.9";
+      inputs = buildInputs({ version: undefined, distPath: "./dist", environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+
+      await run().catch(() => undefined);
+
+      expect(broker.requestCredentials).not.toHaveBeenCalled();
+    });
+  });
 });

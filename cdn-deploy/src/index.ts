@@ -1,6 +1,6 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { folderHasIndexHtml, readInputs } from "./inputs";
+import { folderHasIndexHtml, readInputs, validateVersionShape } from "./inputs";
 import { computeVersion, resolveBaseVersion } from "./version";
 import { resolveEnsurePlan } from "./plan";
 import { uploadFolderToS3, writeCompletionMarker } from "./s3";
@@ -65,10 +65,17 @@ async function run(): Promise<void> {
     return resolved;
   };
 
-  // `CDN_DEPLOY_VERSION` is set by the resolve stage of the same run. Reusing it keeps the
-  // deploy on the version the bytes were actually built for, and saves asking GitHub for
-  // the release list twice.
-  const targetVersion = inputs.version || process.env.CDN_DEPLOY_VERSION || (await commitVersion());
+  // `CDN_DEPLOY_VERSION` is handed over by the resolve stage of the same run, as a step
+  // output pinned in action.yml rather than through $GITHUB_ENV -- the job environment is
+  // writable by anything the build runs. Reusing it keeps the deploy on the version the
+  // bytes were actually built for, and saves asking GitHub for the release list twice.
+  //
+  // Validated anyway: it arrives as a string from outside this process and goes straight
+  // into the S3 key.
+  const handedOver = process.env.CDN_DEPLOY_VERSION
+    ? validateVersionShape(process.env.CDN_DEPLOY_VERSION, "CDN_DEPLOY_VERSION")
+    : undefined;
+  const targetVersion = inputs.version || handedOver || (await commitVersion());
 
   const remoteFolder = `${packageName}/${targetVersion}`;
   const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${targetVersion}`;
@@ -141,6 +148,22 @@ async function run(): Promise<void> {
       throw new Error(
         "`force` was set, but this run has no bytes to write: pass `dist-path` or " +
           "`copy-from-commit`. To repoint an environment at a version already in S3, drop `force`.",
+      );
+    }
+
+    // Nothing to write and nowhere to publish is not a deploy, and both paths below would
+    // call it one: "Repoint only -- no S3 write", then "Stage only: bytes are in S3, no
+    // rollout requested" -- which asserts something nothing verified. The prefix may be
+    // empty, and the run is green either way.
+    //
+    // This is the shape of a release job that lost its `dist-path`, or set `build-command`
+    // without one: the build runs, its output is discarded, and the failure surfaces much
+    // later when someone promotes that tag and finds nothing behind it.
+    if (!hasBytesToWrite && envs.length === 0) {
+      throw new Error(
+        `This run would do nothing: no \`dist-path\` to upload, \`copy-from-commit\` not set, ` +
+          "and no environment to roll out to. Pass `dist-path` to publish a build, or name an " +
+          "environment in `deployment-environments` to repoint one at a version already in S3.",
       );
     }
 
