@@ -12,9 +12,9 @@ import { COMPLETION_MARKER_FILENAME } from "./types";
  * this version prefix.
  *
  * The client is constructed with an explicit credentials object rather than letting the
- * v2 default chain find ambient `AWS_*` variables. There is no longer an assume-role step
- * populating those, and falling back to whatever the runner happens to have would be a
- * silent path to a wider credential than the broker granted.
+ * v2 default chain find ambient `AWS_*` variables. Nothing in this flow populates those,
+ * and falling back to whatever the runner happens to have would be a silent path to a
+ * wider credential than the broker granted.
  *
  * Returns one entry per uploaded object — objects, not source files: the uploader writes
  * up to three per compressible file (`f`, `f.gzip`, `f.br`). The entries are the S3

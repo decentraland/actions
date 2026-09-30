@@ -33,6 +33,43 @@ defaults:
     working-directory: cdn-deploy
 
 jobs:
+  # The bundle is built on `.nvmrc` but runs on whatever the calling job has on PATH, which
+  # is the runner's own Node when that job sets up none. Building and testing on one
+  # version therefore says nothing about the versions it actually executes on.
+  runtime-floor:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared floor, and the runner's current default.
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ matrix.node }}
+
+      # No install: dist/ is self-contained, which is the point of shipping a bundle.
+      # No inputs either — the version check runs before any of them are read.
+      - name: Run the committed bundle
+        run: |
+          set -uo pipefail
+          output=$(node dist/index.js 2>&1) && status=0 || status=$?
+          echo "$output"
+
+          # It must get past the version guard and fail on its own terms. Asserting the
+          # exact downstream error would pin behaviour this job has no business owning.
+          if grep -q 'needs Node' <<<"$output"; then
+            echo "::error::The bundle refuses Node ${{ matrix.node }}, which is at or above the declared floor." >&2
+            exit 1
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo "::error::Expected the run to fail on its inputs; it succeeded." >&2
+            exit 1
+          fi
+          echo "Runs on Node ${{ matrix.node }}."
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:

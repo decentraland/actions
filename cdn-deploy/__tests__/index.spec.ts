@@ -826,7 +826,7 @@ describe("when running the cdn-deploy action", () => {
     it("should refuse the run", async () => {
       pretendNode("v18.20.4");
 
-      await expect(run()).rejects.toThrow(/needs Node 20 or newer/);
+      await expect(run()).rejects.toThrow(/needs Node 22 or newer/);
     });
 
     it("should refuse before reading any input", async () => {
