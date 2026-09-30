@@ -2,11 +2,11 @@
 export type Environment = "zone" | "today" | "org";
 
 /**
- * NOTE: the KV key is no longer resolved here. Which key a package may write is an
- * authorisation decision — it decides whose site this deploy replaces — so it is made by
- * the broker from `@decentraland/definitions`, where the repository that owns each package
- * is recorded. Accepting a caller-supplied path or domain would let any authorised
- * repository repoint another team's site.
+ * The KV key is not resolved here. Which key a package may write is an authorisation
+ * decision — it decides whose site this deploy replaces — so the broker makes it from
+ * `@decentraland/definitions`, where the repository owning each package is recorded.
+ * Accepting a caller-supplied path or domain would let any authorised repository repoint
+ * another team's site.
  */
 
 /** What the state-aware S3 step should do for the target version. */

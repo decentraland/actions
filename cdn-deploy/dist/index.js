@@ -81174,19 +81174,19 @@ async function runBuild(command) {
  * `actions/setup-node`, and `node` on PATH is then the runner's own — 22 on ubuntu-latest.
  * A floor above that refuses a job whose author never set a version at all.
  *
- * 20 keeps the check meaningful for a genuinely ancient runtime without reaching any
- * runner in service.
+ * 22 is the lowest version still receiving security patches, and every runner in service
+ * is at or above it. A job holding write credentials for the production CDN should not run
+ * on an unpatched runtime, which is the argument against dropping further.
  */
-exports.MINIMUM_NODE_MAJOR = 20;
+exports.MINIMUM_NODE_MAJOR = 22;
 /**
- * Refuse a runtime older than the bundle was built for.
+ * Refuse a runtime the bundle cannot rely on.
  *
- * The action runs as `node "$GITHUB_ACTION_PATH/dist/index.js"`, and that `node` resolves
- * from PATH -- so it is whatever version the caller's `actions/setup-node` installed, not
- * anything this repository controls. `engines` is not enforced for a bare `node`
- * invocation, so a job pinning an older node runs this bundle anyway and finds out when
- * some dependency reaches for an API that is not there. That failure names a library, not
- * the cause.
+ * The action runs as `node "$GITHUB_ACTION_PATH/dist/index.js"`, so `node` resolves from
+ * PATH: whatever `actions/setup-node` installed if the job runs one, and the runner's own
+ * otherwise. `engines` is advisory for a bare `node` invocation, so without this a job on
+ * an older runtime runs the bundle anyway and fails wherever a dependency first reaches
+ * for an API that is not there -- naming a library rather than the cause.
  *
  * Checked first, before inputs, so the message is not buried under a validation error.
  */
@@ -81195,7 +81195,8 @@ function assertSupportedNode(version = process.version) {
     if (!Number.isFinite(major) || major < exports.MINIMUM_NODE_MAJOR) {
         throw new Error(`This action needs Node ${exports.MINIMUM_NODE_MAJOR} or newer; this job is running ${version}. ` +
             "Node comes from whatever is on PATH — `actions/setup-node` if the job runs one, " +
-            "otherwise the runner's own. Add or raise `actions/setup-node` in the calling job.");
+            `otherwise the runner's own. Set \`node-version: ${exports.MINIMUM_NODE_MAJOR}.x\` (or newer) on ` +
+            "`actions/setup-node` in the calling job.");
     }
 }
 async function run() {
@@ -81206,12 +81207,9 @@ async function run() {
     // The workflow's own commit. A past build's version cannot be reconstructed from a sha
     // alone, since it carries the run id of the run that produced it.
     const sha = github.context.sha;
-    // Lazy, deliberately. Computing it eagerly meant every run had to resolve a base
-    // version, including a promotion that supplies `version` and checks nothing out — which
-    // died in readInputs before it ever reached the broker.
-    // Still lazy, and now async: resolving the base means asking GitHub for the newest
-    // release. A promotion supplies `version` and checks nothing out, so it must not pay for
-    // that call, and a promotion has no package.json to resolve one from.
+    // Lazy, and async: resolving the base means asking GitHub for the newest release. A
+    // promotion supplies `version` and checks nothing out, so it has no package.json to
+    // resolve a base from and must not pay for the call.
     let resolved;
     const commitVersion = async () => {
         if (resolved)
@@ -81326,12 +81324,10 @@ async function run() {
             // production serves, in place, with no rollout call and nothing to approve, which is
             // precisely what the immutability freeze exists to stop.
             //
-            // There is no "is it already there?" input: the broker refuses to mint for a
-            // published version, and that refusal is handled below.
-            // A published version is immutable, and the broker refuses to write one rather than
-            // trusting the caller to skip. That refusal is the authoritative "already deployed"
-            // answer on both paths, so it is a skip and not a failure -- re-running a deploy
-            // stays idempotent, it just cannot overwrite what is already live.
+            // There is no "is it already there?" input. A published version is immutable and the
+            // broker refuses to write one, so that refusal is the authoritative "already
+            // deployed" answer -- handled below as a skip rather than a failure, which is what
+            // keeps re-running a deploy idempotent.
             const isAlreadyPublished = (e) => e instanceof broker_1.BrokerError && e.code === "version_already_published";
             const reportAlreadyPublished = () => {
                 // A published version is immutable, so this is the idempotent re-run: the bytes
@@ -82026,9 +82022,9 @@ const types_2 = __nccwpck_require__(38522);
  * this version prefix.
  *
  * The client is constructed with an explicit credentials object rather than letting the
- * v2 default chain find ambient `AWS_*` variables. There is no longer an assume-role step
- * populating those, and falling back to whatever the runner happens to have would be a
- * silent path to a wider credential than the broker granted.
+ * v2 default chain find ambient `AWS_*` variables. Nothing in this flow populates those,
+ * and falling back to whatever the runner happens to have would be a silent path to a
+ * wider credential than the broker granted.
  *
  * Returns one entry per uploaded object — objects, not source files: the uploader writes
  * up to three per compressible file (`f`, `f.gzip`, `f.br`). The entries are the S3
