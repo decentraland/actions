@@ -152,8 +152,7 @@ describe("when computing a version", () => {
 
 /**
  * Ordering is the whole job. A version that sorts below what is already live produces a
- * green run that changes nothing -- the failure mode that cost us a full deploy cycle to
- * notice, because every other signal said success.
+ * green run that changes nothing: every other signal reports success.
  */
 describe("when ordering versions", () => {
   const semver = require("semver");
@@ -163,8 +162,8 @@ describe("when ordering versions", () => {
       const earlier = computeVersion({ baseVersion: "0.69.1", sha: "fa1c2d3aaa", runId: "100" });
       const later = computeVersion({ baseVersion: "0.69.1", sha: "0b3e9f1bbb", runId: "200" });
 
-      // The later build has the alphabetically smaller sha, which is what used to invert
-      // the ordering when the run id was absent.
+      // The later build has the alphabetically smaller sha, which inverts the ordering
+      // when nothing monotonic separates them.
       expect(semver.gt(later, earlier)).toBe(true);
     });
   });

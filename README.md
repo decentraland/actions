@@ -150,7 +150,7 @@ A site repository holds **no Cloudflare token and no IAM role**. The action auth
 
 The build runs **inside** the action, between settling the version and uploading it. That ordering is the point: every Decentraland site bakes its CDN base URL into the bundle from the version at build time, so a build that starts before the version is known emits HTML asking for its assets from a prefix nothing was ever uploaded to. Build it yourself instead if you must — then pass `dist-path` and `version` explicitly.
 
-The action installs nothing and sets up no toolchain: the build is a child process and inherits `PATH`, so the node version, npm cache and registry auth stay with the repository. That `node` also runs the action itself, which needs **Node 24 or newer** and says so up front rather than failing later inside a dependency.
+The action installs nothing and sets up no toolchain: the build is a child process and inherits `PATH`, so the node version, npm cache and registry auth stay with the repository. That `node` also runs the action itself, which needs **Node 20 or newer** and says so up front rather than failing later inside a dependency.
 
 Unlike the rest of this repository, which is consumed from `@main`, `cdn-deploy` is consumed from the pinned major tag `@cdn-deploy-v1`: it runs from a committed bundle, and the release workflow only moves that tag onto a commit whose bundle matches its sources.
 

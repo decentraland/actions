@@ -31,8 +31,7 @@ jest.mock("../src/inputs", () => ({
   readInputs: jest.fn(),
   folderHasIndexHtml: jest.fn(),
   // Mocked so WHEN it runs is observable. Left real it silently passes, because the
-  // action's own `dist/` exists relative to the test's cwd — which is exactly why the
-  // ordering regression went unnoticed twice.
+  // action's own `dist/` exists relative to the test's cwd.
   validateDistPath: jest.fn(),
 }));
 jest.mock("../src/s3");
@@ -298,10 +297,8 @@ describe("when running the cdn-deploy action", () => {
 
   describe("and the same commit is deployed again", () => {
     /**
-     * Driven by the broker's refusal, which is the only way this is signalled. It used to
-     * be driven by a grant carrying `targetExists: true` — a value the broker never sent,
-     * so the test passed against a state that cannot occur while the real redeploy path
-     * went unexercised here. That field is gone from the wire entirely now.
+     * Driven by the broker's refusal, which is the only way this is signalled — the grant
+     * carries no "already there" field, so there is nothing else to key on.
      */
     beforeEach(() => {
       inputs = buildInputs({ distPath: "./dist" });
@@ -620,9 +617,9 @@ describe("when running the cdn-deploy action", () => {
   });
 
   /**
-   * A run with nothing to upload and nowhere to publish used to be reported as a success,
-   * with a log line asserting "bytes are in S3" that nothing had verified. It is the shape
-   * of a release job that lost its dist-path.
+   * A run with nothing to upload and nowhere to publish has no effect, and the paths it
+   * would otherwise take report success — including a log line asserting "bytes are in S3"
+   * that nothing verified. It is the shape of a release job that lost its dist-path.
    */
   describe("and the run has nothing to write and nowhere to publish", () => {
     beforeEach(() => {
@@ -829,7 +826,7 @@ describe("when running the cdn-deploy action", () => {
     it("should refuse the run", async () => {
       pretendNode("v18.20.4");
 
-      await expect(run()).rejects.toThrow(/needs Node 24 or newer/);
+      await expect(run()).rejects.toThrow(/needs Node 20 or newer/);
     });
 
     it("should refuse before reading any input", async () => {

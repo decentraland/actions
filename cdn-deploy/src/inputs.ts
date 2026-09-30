@@ -169,8 +169,8 @@ export function readPackageJson(folder: string): { name?: string; version?: stri
   try {
     return JSON.parse(contents);
   } catch (e) {
-    // Swallowing this used to hand back `{}`, which silently became the
-    // `0.0.0` base version and a prefix nobody serves.
+    // Fatal rather than swallowed: an unreadable package.json handed back as `{}` becomes
+    // a `0.0.0` base version and a prefix nobody serves.
     throw new Error(
       `Could not parse ${path.resolve(file)}: ${e instanceof Error ? e.message : String(e)}`,
     );

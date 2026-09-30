@@ -81163,12 +81163,21 @@ async function runBuild(command) {
     });
 }
 /**
- * The lowest node this action's bundle is built and tested against.
+ * The lowest node the emitted bundle needs to execute.
  *
- * Must match `engines.node` in package.json and `.nvmrc`; a test asserts the three agree,
- * because nothing else would notice them drifting.
+ * Distinct from `engines.node` and `.nvmrc`, which state the toolchain this package is
+ * developed and built with. The bundle asks for much less: nothing in `src/` uses an API
+ * past es2020, and the heaviest dependency declares `>= 10`.
+ *
+ * The distinction matters because a caller does not always choose the runtime. A job that
+ * only repoints an already-uploaded version runs no build, so it runs no
+ * `actions/setup-node`, and `node` on PATH is then the runner's own — 22 on ubuntu-latest.
+ * A floor above that refuses a job whose author never set a version at all.
+ *
+ * 20 keeps the check meaningful for a genuinely ancient runtime without reaching any
+ * runner in service.
  */
-exports.MINIMUM_NODE_MAJOR = 24;
+exports.MINIMUM_NODE_MAJOR = 20;
 /**
  * Refuse a runtime older than the bundle was built for.
  *
@@ -81185,8 +81194,8 @@ function assertSupportedNode(version = process.version) {
     const major = Number.parseInt(version.replace(/^v/, ""), 10);
     if (!Number.isFinite(major) || major < exports.MINIMUM_NODE_MAJOR) {
         throw new Error(`This action needs Node ${exports.MINIMUM_NODE_MAJOR} or newer; this job is running ${version}. ` +
-            "The version comes from whatever `actions/setup-node` put on PATH, so raise " +
-            `\`node-version\` in the job that calls this action — for example \`node-version: ${exports.MINIMUM_NODE_MAJOR}.x\`.`);
+            "Node comes from whatever is on PATH — `actions/setup-node` if the job runs one, " +
+            "otherwise the runner's own. Add or raise `actions/setup-node` in the calling job.");
     }
 }
 async function run() {
@@ -81194,17 +81203,15 @@ async function run() {
     const inputs = (0, inputs_1.readInputs)();
     const { packageName } = inputs;
     // `commit` lets a manual deploy target a specific commit's build; otherwise it's the
-    // workflow's commit.
-    // The workflow's own commit. There used to be a `commit` input for "deploy this other
-    // commit's build", which stopped being possible once the run id became part of the
-    // version -- a past build's version cannot be reconstructed from its sha alone.
+    // The workflow's own commit. A past build's version cannot be reconstructed from a sha
+    // alone, since it carries the run id of the run that produced it.
     const sha = github.context.sha;
     // Lazy, deliberately. Computing it eagerly meant every run had to resolve a base
     // version, including a promotion that supplies `version` and checks nothing out — which
     // died in readInputs before it ever reached the broker.
     // Still lazy, and now async: resolving the base means asking GitHub for the newest
     // release. A promotion supplies `version` and checks nothing out, so it must not pay for
-    // that call -- eagerly resolving is what used to kill those runs inside readInputs.
+    // that call, and a promotion has no package.json to resolve one from.
     let resolved;
     const commitVersion = async () => {
         if (resolved)
@@ -81221,8 +81228,8 @@ async function run() {
         return resolved;
     };
     // One process resolves it and one process uses it, so the version never leaves this
-    // scope. It used to cross a step boundary through $GITHUB_ENV, which also meant a second
-    // invocation in the same job silently inherited the first one's version.
+    // scope. Crossing a step boundary would mean $GITHUB_ENV, which is job-wide: a second
+    // invocation in the same job would silently inherit the first one's version.
     const targetVersion = inputs.version || (await commitVersion());
     const remoteFolder = `${packageName}/${targetVersion}`;
     const cdnUrl = `${inputs_1.DEFAULT_CDN_BASE_URL}/${packageName}/${targetVersion}`;
@@ -81310,8 +81317,8 @@ async function run() {
         }
         if (hasBytesToWrite) {
             // Decided BEFORE any credential is requested, so the release path never asks for
-            // one. It used to: `requestCredentials` ran unconditionally here, which meant every
-            // release minted a 900-second write session over the tag prefix and then handed the
+            // one. Requesting unconditionally would mint a 900-second write session over the
+            // tag prefix and hand the
             // copy to the broker without ever using it. That session sat in the job for the rest
             // of the run — through the rollout, every later step in the job and every
             // dependency loaded into the same process — holding `s3:PutObject` over the prefix
@@ -81374,7 +81381,7 @@ async function run() {
         else {
             // The broker announces each rollout to Slack itself. It is the thing that writes
             // the KV record, so it is the only one that knows a rollout happened -- this job
-            // dying here used to mean a deploy went live unannounced.
+            // a failure here would otherwise mean a deploy goes live unannounced.
             await rolloutEnvironments(broker, inputs, { packageName, targetVersion, envs });
         }
         await observability.succeed();
@@ -81731,8 +81738,8 @@ function readPackageJson(folder) {
         return JSON.parse(contents);
     }
     catch (e) {
-        // Swallowing this used to hand back `{}`, which silently became the
-        // `0.0.0` base version and a prefix nobody serves.
+        // Fatal rather than swallowed: an unreadable package.json handed back as `{}` becomes
+        // a `0.0.0` base version and a prefix nobody serves.
         throw new Error(`Could not parse ${path.resolve(file)}: ${e instanceof Error ? e.message : String(e)}`);
     }
 }
@@ -82261,11 +82268,9 @@ const semver = __importStar(__nccwpck_require__(62088));
  * - With a `-` instead of the `.`, `<runId>-commit-<sha>` is one alphanumeric identifier
  *   compared lexically, which works only while every run id has the same digit count.
  *
- * An earlier version of this file omitted the run id on purpose, so that a release could
- * reconstruct the commit version it was copying. That reason is gone: releases rebuild
- * under the tag rather than copying, because every site bakes its asset base from the
- * version at build time. A re-run keeps its run id, so re-running a failed job still
- * resolves to the same prefix.
+ * A version is not reconstructable from a commit sha alone, which is why a release
+ * rebuilds under its tag rather than copying an existing build. A re-run keeps its run id,
+ * so retrying a failed job resolves to the same prefix.
  */
 const SHA_RE = /^[0-9a-f]{7,40}$/i;
 const RUN_ID_RE = /^[0-9]+$/;
