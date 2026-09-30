@@ -1,9 +1,10 @@
 import * as core from "@actions/core";
+import { spawn } from "child_process";
 import { BrokerError, createBrokerClient } from "../src/broker";
 import { createBrokeredCredentials } from "../src/credentials";
 import { createObservability } from "../src/github";
-import { RELEASE_LIMITS, reportFailure, run } from "../src/index";
-import { folderHasIndexHtml, readInputs } from "../src/inputs";
+import { reportFailure, run } from "../src/index";
+import { folderHasIndexHtml, readInputs, validateVersionShape } from "../src/inputs";
 import { uploadFolderToS3, writeCompletionMarker } from "../src/s3";
 import { ActionInputs } from "../src/types";
 
@@ -19,6 +20,7 @@ jest.mock("@actions/core", () => ({
   summary: { addHeading: jest.fn(), addTable: jest.fn(), write: jest.fn() },
 }));
 jest.mock("@actions/github", () => ({ context: { sha: "", runId: 4242 } }));
+jest.mock("child_process", () => ({ spawn: jest.fn() }));
 jest.mock("../src/inputs", () => ({
   ...jest.requireActual("../src/inputs"),
   readInputs: jest.fn(),
@@ -49,16 +51,10 @@ describe("when running the cdn-deploy action", () => {
     return {
       distPath: "",
       packageName: PACKAGE_NAME,
-      baseVersion: "1.0.0",
+      packageVersion: "1.0.0",
       environments: ["zone", "today"],
-      deploymentName: "_site",
       percentage: 100,
-      requireIndex: true,
-      copyFromCommit: false,
-      createGithubDeployment: false,
-      cdnBaseUrl: "https://cdn.decentraland.org",
       brokerUrl: "https://cdn-deploy.decentraland.org",
-      oidcAudience: "dcl-cdn-deploy",
       ...overrides,
     };
   }
@@ -103,6 +99,13 @@ describe("when running the cdn-deploy action", () => {
     groupMock = core.group as unknown as jest.Mock;
     groupMock.mockImplementation((_name: string, fn: () => Promise<unknown>) => fn());
 
+    // A build that exits 0. Individual tests override the exit code.
+    (spawn as unknown as jest.Mock).mockImplementation(() => ({
+      on: (event: string, cb: (code: number) => void) => {
+        if (event === "close") setImmediate(() => cb(0));
+      },
+    }));
+
     summaryMock = core.summary as unknown as SummaryMock;
     summaryMock.addHeading.mockReturnValue(summaryMock);
     summaryMock.addTable.mockReturnValue(summaryMock);
@@ -131,6 +134,10 @@ describe("when running the cdn-deploy action", () => {
     writeCompletionMarkerMock = writeCompletionMarker as jest.MockedFunction<
       typeof writeCompletionMarker
     >;
+    // Same reasoning as folderHasIndexHtml above: uploadDir resolves to the list of objects
+    // it wrote, and a describe that left it undefined only worked because a sibling had
+    // stubbed it.
+    uploadFolderToS3Mock.mockResolvedValue(["one-object"]);
 
     broker.rollout.mockImplementation(async ({ environment }: { environment: string }) =>
       rolloutResult(environment),
@@ -228,83 +235,6 @@ describe("when running the cdn-deploy action", () => {
     });
   });
 
-  /**
-   * The resolve stage of a `build-command` run. It exists because every site bakes its CDN
-   * base URL from the version at build time, so the build cannot start until the version is
-   * settled -- and it must be the SAME version the upload then uses, or the HTML points at
-   * a prefix that was never written.
-   */
-  describe("and the run is the resolve stage of a build", () => {
-    beforeEach(() => {
-      process.env.CDN_DEPLOY_STAGE = "resolve";
-      inputs = buildInputs({ version: "8.36.0", distPath: "./dist", environments: ["zone"] });
-      readInputsMock.mockReturnValue(inputs);
-      // Pinned so "did not upload" can only be explained by the short circuit. Left to
-      // whatever the previous test set, this passed because the run died on the index
-      // check instead -- a test that cannot fail for the stated reason.
-      folderHasIndexHtmlMock.mockReturnValue(true);
-      broker.requestCredentials.mockResolvedValue({
-        bucket: "cdn-test-bucket",
-        region: "us-east-1",
-        prefix: "@dcl/auth-site/8.36.0/",
-        credentials: { accessKeyId: "AKIA", secretAccessKey: "s", sessionToken: "t" },
-      });
-    });
-
-    afterEach(() => {
-      delete process.env.CDN_DEPLOY_STAGE;
-      delete process.env.CDN_DEPLOY_VERSION;
-    });
-
-    it("should publish the version for the build to read", async () => {
-      await run();
-
-      expect(core.exportVariable).toHaveBeenCalledWith("CDN_DEPLOY_VERSION", "8.36.0");
-    });
-
-    it("should still report the version as an output", async () => {
-      await run();
-
-      expect(setOutputMock).toHaveBeenCalledWith("version", "8.36.0");
-    });
-
-    // Asserted together on purpose: "did not upload" is also true of a run that fell over
-    // on the way there, and this stage failing is exactly the thing that would strand a
-    // workflow with a built site and no deploy.
-    it("should upload nothing, since nothing has been built yet", async () => {
-      await run();
-
-      expect(uploadFolderToS3).not.toHaveBeenCalled();
-      expect(core.setFailed).not.toHaveBeenCalled();
-    });
-
-    it("should roll nothing out", async () => {
-      await run();
-
-      expect(broker.rollout).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("and the deploy stage follows a resolve", () => {
-    // The whole point of exporting it: the deploy must not resolve a second, different
-    // version, or the bytes and the prefix disagree.
-    beforeEach(() => {
-      process.env.CDN_DEPLOY_VERSION = "0.69.1-4242.commit-abc1234";
-      inputs = buildInputs({ version: undefined, distPath: "./dist", environments: ["zone"] });
-      readInputsMock.mockReturnValue(inputs);
-    });
-
-    afterEach(() => {
-      delete process.env.CDN_DEPLOY_VERSION;
-    });
-
-    it("should deploy the version the build was given", async () => {
-      await run();
-
-      expect(setOutputMock).toHaveBeenCalledWith("version", "0.69.1-4242.commit-abc1234");
-    });
-  });
-
   describe("and a promotion runs with no checkout", () => {
     /**
      * The shape of the promote job: a version to put live, no dist-path, no checkout — so
@@ -315,7 +245,6 @@ describe("when running the cdn-deploy action", () => {
     beforeEach(() => {
       inputs = buildInputs({
         version: "8.36.0",
-        baseVersion: undefined,
         distPath: "",
         environments: ["org"],
       });
@@ -338,7 +267,6 @@ describe("when running the cdn-deploy action", () => {
       await run();
 
       expect(broker.requestCredentials).not.toHaveBeenCalled();
-      expect(broker.release).not.toHaveBeenCalled();
     });
   });
 
@@ -346,59 +274,16 @@ describe("when running the cdn-deploy action", () => {
     // The demand did not disappear, it moved: a run that must compute a commit version
     // still fails, and still says how to fix it.
     beforeEach(() => {
-      inputs = buildInputs({ distPath: "./dist", baseVersion: undefined, environments: ["zone"] });
+      inputs = buildInputs({
+        distPath: "./dist",
+        packageVersion: undefined,
+        environments: ["zone"],
+      });
       readInputsMock.mockReturnValue(inputs);
     });
 
     it("should fail naming the base version", async () => {
       await expect(run()).rejects.toThrow("Unable to resolve a base version");
-    });
-  });
-
-  describe("and a release copies a commit build into the tag", () => {
-    /**
-     * The release path must not hold a write session over the prefix it is publishing.
-     *
-     * It used to request one unconditionally and then never use it: the copy is
-     * server-side and the broker writes the marker, so the credential did nothing but sit
-     * in the job — through the rollout and every later step — holding
-     * `s3:PutObject` over the prefix that was about to become production. Anything that
-     * reached it could have replaced what the CDN serves in place, with no rollout call
-     * and nothing to approve, which is exactly what the immutability freeze exists to
-     * stop.
-     */
-    beforeEach(() => {
-      inputs = buildInputs({
-        version: RELEASE_VERSION,
-        copyFromCommit: true,
-        environments: ["zone"],
-      });
-      readInputsMock.mockReturnValue(inputs);
-      broker.release.mockResolvedValue({ complete: true, copied: 12, objectCount: 12 });
-    });
-
-    it("should not mint write credentials it does not use", async () => {
-      await run();
-
-      expect(broker.requestCredentials).not.toHaveBeenCalled();
-    });
-
-    it("should still perform the copy", async () => {
-      await run();
-
-      expect(broker.release).toHaveBeenCalledTimes(1);
-    });
-
-    it("should report the copy", async () => {
-      await run();
-
-      expect(setOutputMock).toHaveBeenCalledWith("mode", "copy");
-    });
-
-    it("should still roll out afterwards", async () => {
-      await run();
-
-      expect(broker.rollout).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -434,240 +319,6 @@ describe("when running the cdn-deploy action", () => {
       await run();
 
       expect(setOutputMock).toHaveBeenCalledWith("mode", "skip");
-    });
-  });
-
-  describe("and a release is being staged", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
-      readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant());
-      broker.release.mockResolvedValue({ complete: true, copied: 12, objectCount: 12 });
-    });
-
-    it("should ask the broker to copy rather than upload", async () => {
-      await run();
-
-      expect(broker.release).toHaveBeenCalledWith(
-        expect.objectContaining({ version: RELEASE_VERSION, sourceVersion: COMMIT_VERSION }),
-      );
-    });
-
-    it("should not upload anything from the runner", async () => {
-      await run();
-
-      expect(uploadFolderToS3Mock).not.toHaveBeenCalled();
-    });
-
-    it("should not roll out, since no environment was requested", async () => {
-      await run();
-
-      expect(broker.rollout).not.toHaveBeenCalled();
-    });
-
-    it("should report the copy", async () => {
-      await run();
-
-      expect(setOutputMock).toHaveBeenCalledWith("mode", "copy");
-    });
-  });
-
-  describe("and the release copy needs more than one call", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
-      readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant());
-      broker.release
-        .mockResolvedValueOnce({ complete: false, copied: 640, continuation: "tok-1" })
-        .mockResolvedValueOnce({ complete: false, copied: 1280, continuation: "tok-2" })
-        .mockResolvedValueOnce({ complete: true, copied: 1500, objectCount: 1500 });
-    });
-
-    it("should keep calling until the copy reports complete", async () => {
-      await run();
-
-      expect(broker.release).toHaveBeenCalledTimes(3);
-    });
-
-    it("should pass the continuation token back", async () => {
-      await run();
-
-      expect(broker.release).toHaveBeenNthCalledWith(
-        2,
-        expect.objectContaining({ continuation: "tok-1" }),
-      );
-    });
-  });
-
-  describe("and the source build has not finished uploading yet", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
-      readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant());
-      // retryAfter 0 keeps the test fast; what is under test is that it waits and retries
-      // rather than failing, not how long it waits.
-      broker.release
-        .mockRejectedValueOnce(new BrokerError("source_not_ready", 409, "still uploading", {}, 0))
-        .mockRejectedValueOnce(new BrokerError("source_not_ready", 409, "still uploading", {}, 0))
-        .mockResolvedValueOnce({ complete: true, copied: 5, objectCount: 5 });
-    });
-
-    // A release routinely races the commit build that produced its source, so this is a
-    // wait rather than a failure.
-    it("should keep waiting until the source is ready", async () => {
-      await run();
-
-      expect(broker.release).toHaveBeenCalledTimes(3);
-    });
-
-    it("should complete the release once it is", async () => {
-      await run();
-
-      expect(setOutputMock).toHaveBeenCalledWith("mode", "copy");
-    });
-  });
-
-  /**
-   * The loop had no cap, no deadline and no progress check, and no pause on the progress
-   * path -- so a broker answering "not done" forever burned the whole job timeout, and one
-   * answering without a continuation hot-looped. These pin all three exits.
-   */
-  describe("and the broker never reports the copy as finished", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
-      readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant());
-      // Same token, same count: it is not getting anywhere.
-      broker.release.mockResolvedValue({ complete: false, copied: 640, continuation: "stuck" });
-    });
-
-    it("should give up rather than loop forever", async () => {
-      await expect(run()).rejects.toThrow(/stopped making progress/);
-    });
-
-    it("should stop after a handful of attempts", async () => {
-      await run().catch(() => undefined);
-
-      expect(broker.release.mock.calls.length).toBeLessThan(10);
-    });
-  });
-
-  describe("and the broker reports the copy unfinished with nothing to resume from", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
-      readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant());
-      broker.release.mockResolvedValue({ complete: false, copied: 1 });
-    });
-
-    // Without this it re-issued immediately with an undefined continuation, restarting the
-    // copy every iteration with no pause between attempts.
-    it("should fail instead of restarting the copy", async () => {
-      await expect(run()).rejects.toThrow(/nothing to resume from/);
-    });
-
-    it("should not call the broker again after the first answer", async () => {
-      await run().catch(() => undefined);
-
-      expect(broker.release).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe("and the source keeps saying it is not ready", () => {
-    /**
-     * The call cap used to count source-wait polls, so a broker sending a short
-     * Retry-After burned all 300 in minutes and the run failed with "the copy did not
-     * finish" — blaming the copy for a source build that had not started.
-     */
-    beforeEach(() => {
-      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
-      readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant());
-      // One copy attempt allowed. If waits were counted against it — as they were — two
-      // of them would exhaust the budget before the copy is ever tried. At the real cap of
-      // 300 this distinction is invisible, which is why the cap is lowered here.
-      RELEASE_LIMITS.maxCalls = 1;
-      let polls = 0;
-      broker.release.mockImplementation(async () => {
-        // each wait sleeps at least a second (the Retry-After: 0 floor), so keep it short
-        if (++polls <= 2) throw new BrokerError("source_not_ready", 409, "still uploading", {}, 0);
-        return { complete: true, copied: 3, objectCount: 3 };
-      });
-    });
-
-    afterEach(() => {
-      RELEASE_LIMITS.maxCalls = 300;
-    });
-
-    it("should not spend the copy budget on waiting", async () => {
-      await expect(run()).resolves.toBeUndefined();
-    });
-
-    it("should go on to finish the copy once the source lands", async () => {
-      await run();
-
-      expect(broker.release).toHaveBeenCalledTimes(3);
-    });
-  });
-
-  describe("and the copy never reports itself complete", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
-      readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant());
-      RELEASE_LIMITS.maxCalls = 4;
-      let copied = 0;
-      // Always progressing, so the stall detector never fires and only the call cap can
-      // stop it.
-      broker.release.mockImplementation(async () => ({
-        complete: false,
-        copied: (copied += 10),
-        continuation: `tok-${copied}`,
-      }));
-    });
-
-    afterEach(() => {
-      RELEASE_LIMITS.maxCalls = 300;
-    });
-
-    it("should give up rather than loop forever", async () => {
-      await expect(run()).rejects.toThrow(/did not finish after 4 calls/);
-    });
-
-    /**
-     * Exactly the number it reports, not one more. `>` let a 301st call through and then
-     * announced 300, so the cap in the message and the cap actually applied disagreed.
-     */
-    it("should make exactly as many calls as the message claims", async () => {
-      await run().catch(() => undefined);
-
-      expect(broker.release).toHaveBeenCalledTimes(4);
-    });
-  });
-
-  describe("and the source build never finishes", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
-      readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant());
-      broker.release.mockRejectedValue(
-        new BrokerError("source_not_ready", 409, "still uploading", {}, 0),
-      );
-      RELEASE_LIMITS.maxSourceWaitMs = 0;
-    });
-
-    afterEach(() => {
-      RELEASE_LIMITS.maxSourceWaitMs = 30 * 60_000;
-    });
-
-    // A source build that failed will never land. Waiting out the job timeout reports
-    // "timed out" instead of naming the workflow that actually broke.
-    it("should stop waiting rather than burn the job timeout", async () => {
-      await expect(run()).rejects.toThrow(/still has not finished/);
-    });
-
-    it("should say the source most likely failed", async () => {
-      await expect(run()).rejects.toThrow(/most likely failed/);
     });
   });
 
@@ -714,27 +365,6 @@ describe("when running the cdn-deploy action", () => {
       );
 
       await expect(run()).rejects.toThrow("not your package");
-    });
-  });
-
-  describe("and the release fails for a reason other than a missing source", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ version: RELEASE_VERSION, copyFromCommit: true, environments: [] });
-      readInputsMock.mockReturnValue(inputs);
-      broker.requestCredentials.mockResolvedValue(grant());
-      broker.release.mockRejectedValue(
-        new BrokerError("version_tag_mismatch", 403, "not your tag", {}),
-      );
-    });
-
-    it("should fail rather than retry forever", async () => {
-      await expect(run()).rejects.toThrow("not your tag");
-    });
-
-    // The code travels on the error; reportFailure is what prefixes it into the message
-    // the user sees, which is asserted separately below.
-    it("should carry the broker's code", async () => {
-      await expect(run()).rejects.toMatchObject({ code: "version_tag_mismatch" });
     });
   });
 
@@ -828,22 +458,6 @@ describe("when running the cdn-deploy action", () => {
     });
   });
 
-  describe("and the index guard is disabled for a non-HTML bundle", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ distPath: "./dist", requireIndex: false });
-      readInputsMock.mockReturnValue(inputs);
-      folderHasIndexHtmlMock.mockReturnValue(false);
-      broker.requestCredentials.mockResolvedValue(grant());
-      uploadFolderToS3Mock.mockResolvedValue(["bundle.js"]);
-    });
-
-    it("should upload a folder with no index.html", async () => {
-      await run();
-
-      expect(uploadFolderToS3Mock).toHaveBeenCalledTimes(1);
-    });
-  });
-
   describe("and one environment fails to roll out", () => {
     beforeEach(() => {
       inputs = buildInputs({ distPath: "./dist" });
@@ -928,21 +542,6 @@ describe("when running the cdn-deploy action", () => {
     });
   });
 
-  describe("and a specific commit is being deployed", () => {
-    beforeEach(() => {
-      inputs = buildInputs({ commit: COMMIT_INPUT_SHA });
-      readInputsMock.mockReturnValue(inputs);
-    });
-
-    it("should attribute the deployment to that commit", async () => {
-      await run();
-
-      expect(createObservabilityMock).toHaveBeenCalledWith(
-        expect.objectContaining({ sha: COMMIT_INPUT_SHA, version: "1.0.0-4242.commit-feed123" }),
-      );
-    });
-  });
-
   describe("and the run throws", () => {
     it("should fail the job rather than report success", () => {
       reportFailure(new Error("upload exploded"));
@@ -1021,7 +620,6 @@ describe("when running the cdn-deploy action", () => {
       inputs = buildInputs({
         version: "1.2.3",
         distPath: "",
-        copyFromCommit: false,
         environments: [],
       });
       readInputsMock.mockReturnValue(inputs);
@@ -1037,30 +635,171 @@ describe("when running the cdn-deploy action", () => {
   });
 
   /**
-   * The version is the second segment of the S3 key. `validatePackageName` guards the first
-   * precisely because a PR can edit the file it comes from; this guards the other half.
+   * The build runs inside the action, between settling the version and uploading, because
+   * every site bakes its asset base URL from the version at build time. Splitting those
+   * into separate composite steps meant the version had to cross a boundary, and the only
+   * way across was $GITHUB_ENV -- job-wide and writable by anything the build runs.
    */
-  describe("and a version arrives with a path in it", () => {
-    afterEach(() => {
-      delete process.env.CDN_DEPLOY_VERSION;
+  describe("and the action owns the build", () => {
+    beforeEach(() => {
+      inputs = buildInputs({
+        buildCommand: "npm run build",
+        distPath: "./dist",
+        environments: ["zone"],
+      });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant());
     });
 
-    it("should refuse a handed-over version that climbs out of the package", async () => {
-      process.env.CDN_DEPLOY_VERSION = "../../@dcl/other-site/9.9.9";
-      inputs = buildInputs({ version: undefined, distPath: "./dist", environments: ["zone"] });
-      readInputsMock.mockReturnValue(inputs);
+    it("should run the build the caller asked for", async () => {
+      await run();
 
-      await expect(run()).rejects.toThrow(/no path separators/);
+      expect(spawn).toHaveBeenCalledWith(
+        "bash",
+        ["-e", "-o", "pipefail", "-c", "npm run build"],
+        expect.anything(),
+      );
     });
 
-    it("should not mint credentials for it", async () => {
-      process.env.CDN_DEPLOY_VERSION = "../../@dcl/other-site/9.9.9";
-      inputs = buildInputs({ version: undefined, distPath: "./dist", environments: ["zone"] });
-      readInputsMock.mockReturnValue(inputs);
+    // Spliced into a `run:` block it was structure, not data: a caller interpolating an
+    // untrusted string into build-command handed shell metacharacters straight to bash.
+    it("should pass the command as an argument rather than as shell text", async () => {
+      await run();
 
+      const [, argv] = (spawn as unknown as jest.Mock).mock.calls[0];
+      expect(argv[argv.length - 1]).toBe("npm run build");
+    });
+
+    it("should publish the version for the build to read", async () => {
+      await run();
+
+      expect(core.exportVariable).toHaveBeenCalledWith("CDN_DEPLOY_VERSION", expect.any(String));
+    });
+
+    // The ordering is the whole reason the build lives here.
+    it("should build before it uploads", async () => {
+      const order: string[] = [];
+      (spawn as unknown as jest.Mock).mockImplementation(() => {
+        order.push("build");
+        return {
+          on: (event: string, cb: (code: number) => void) => {
+            if (event === "close") setImmediate(() => cb(0));
+          },
+        };
+      });
+      uploadFolderToS3Mock.mockImplementation(async () => {
+        order.push("upload");
+        return ["one"];
+      });
+
+      await run();
+
+      expect(order).toEqual(["build", "upload"]);
+    });
+
+    it("should still upload and roll out afterwards", async () => {
+      await run();
+
+      expect(uploadFolderToS3Mock).toHaveBeenCalledTimes(1);
+      expect(broker.rollout).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("and the build fails", () => {
+    beforeEach(() => {
+      inputs = buildInputs({
+        buildCommand: "npm run build",
+        distPath: "./dist",
+        environments: ["zone"],
+      });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant());
+      (spawn as unknown as jest.Mock).mockImplementation(() => ({
+        on: (event: string, cb: (code: number) => void) => {
+          if (event === "close") setImmediate(() => cb(1));
+        },
+      }));
+    });
+
+    it("should fail the run rather than upload whatever is on disk", async () => {
+      await expect(run()).rejects.toThrow(/build failed with exit code 1/);
+    });
+
+    it("should upload nothing", async () => {
       await run().catch(() => undefined);
 
-      expect(broker.requestCredentials).not.toHaveBeenCalled();
+      expect(uploadFolderToS3Mock).not.toHaveBeenCalled();
+    });
+
+    it("should roll nothing out", async () => {
+      await run().catch(() => undefined);
+
+      expect(broker.rollout).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("and a version input contains a path", () => {
+    it("should refuse it, since the version is half the S3 key", () => {
+      expect(() =>
+        validateVersionShape("../../@dcl/other-site/9.9.9", "the `version` input"),
+      ).toThrow(/no path separators/);
+    });
+  });
+
+  /**
+   * Mutation testing found these three unguarded. Each is a value the action computes and
+   * hands to something else, where "it was computed" and "it arrived" are different claims
+   * and only the first was ever asserted.
+   */
+  describe("and the values the action hands on are checked", () => {
+    beforeEach(() => {
+      inputs = buildInputs({ distPath: "./dist", percentage: 25, environments: ["zone"] });
+      readInputsMock.mockReturnValue(inputs);
+      broker.requestCredentials.mockResolvedValue(grant());
+    });
+
+    /**
+     * The self-refreshing object exists because a 15-minute session expires mid-upload on a
+     * large site. Replacing it with the broker's static credentials left every test green:
+     * the suite only ever checked that createBrokeredCredentials was CALLED, never that
+     * what it returned was what signed the requests.
+     */
+    it("should sign the upload with the self-refreshing credentials, not the static grant", async () => {
+      const refreshing = (createBrokeredCredentials as jest.Mock).mock.results;
+
+      await run();
+
+      const passed = uploadFolderToS3Mock.mock.calls[0][0].credentials;
+      expect(passed).toBe(refreshing[0].value);
+    });
+
+    it("should sign the completion marker with the same object", async () => {
+      await run();
+
+      const upload = uploadFolderToS3Mock.mock.calls[0][0].credentials;
+      const marker = writeCompletionMarkerMock.mock.calls[0][0].credentials;
+      expect(marker).toBe(upload);
+    });
+
+    // The marker is what makes a prefix publishable, and the broker reads it back to decide
+    // whether this version may be rolled out. Every field was unasserted.
+    it("should describe the deployment in the completion marker", async () => {
+      await run();
+
+      expect(writeCompletionMarkerMock.mock.calls[0][0].marker).toMatchObject({
+        package: PACKAGE_NAME,
+        commit: expect.stringMatching(/^[0-9a-f]{7,40}$/),
+        kind: "upload",
+      });
+    });
+
+    it("should roll out at the percentage it was given", async () => {
+      await run();
+
+      expect(broker.rollout.mock.calls[0][0]).toMatchObject({
+        percentage: 25,
+        rolloutName: "_site",
+      });
     });
   });
 });

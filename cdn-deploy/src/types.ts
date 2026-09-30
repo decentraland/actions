@@ -10,7 +10,7 @@ export type Environment = "zone" | "today" | "org";
  */
 
 /** What the state-aware S3 step should do for the target version. */
-export type S3Action = "upload" | "copy" | "skip";
+export type S3Action = "upload" | "skip";
 
 export type EnsurePlan = {
   s3: S3Action;
@@ -23,33 +23,21 @@ export type ActionInputs = {
   /** Pre-built directory to upload (deploy). Empty for copy/repoint flows. */
   distPath: string;
   packageName: string;
-  /** An explicit `base-version` input. Overrides everything when present. */
-  baseVersion?: string;
+  /**
+   * The caller's build, run between settling the version and uploading. Absent means the
+   * caller built it themselves and must pass `version`.
+   */
+  buildCommand?: string;
   /** The repo-root package.json version. A floor, not the anchor. */
   packageVersion?: string;
   /** Environments whose KV gets repointed. Empty = stage only (S3, no KV). */
   environments: Environment[];
-  deploymentName: string;
   percentage: number;
   /** Explicit target version (e.g. a release tag). Defaults to the commit version. */
   version?: string;
   /** Explicit version to copy from. Outranks everything but an already-present target. */
-  /** Commit sha to compute the version from (manual deploy by commit). Defaults to GITHUB_SHA. */
-  commit?: string;
-  /** Fail a deploy if the folder has no index.html at its root (default true). */
-  requireIndex: boolean;
-  /**
-   * Opt in to the release copy: when the target `version` is absent from S3,
-   * fill it from the current commit's already-uploaded build. Off by default so
-   * a `version` that is merely absent fails instead of being silently filled.
-   */
-  copyFromCommit: boolean;
-  createGithubDeployment: boolean;
-  cdnBaseUrl: string;
   /** The deploy broker's base URL. */
   brokerUrl: string;
-  /** Audience requested on the OIDC token; the broker verifies it. */
-  oidcAudience: string;
 };
 
 /** Minimal `node-fetch` shape, narrowed to what the broker client needs. */

@@ -93,7 +93,7 @@ describe("when parsing a boolean input", () => {
 
     describe("and the fallback is false", () => {
       it("should return false", () => {
-        expect(parseBooleanInput("", false, "copy-from-commit")).toBe(false);
+        expect(parseBooleanInput("", false, "require-index")).toBe(false);
       });
     });
   });
@@ -106,19 +106,19 @@ describe("when parsing a boolean input", () => {
 
   describe("and the value is lowercase true", () => {
     it("should return true", () => {
-      expect(parseBooleanInput("true", false, "copy-from-commit")).toBe(true);
+      expect(parseBooleanInput("true", false, "require-index")).toBe(true);
     });
   });
 
   describe("and the value is uppercase TRUE", () => {
     it("should return true rather than silently falling back to false", () => {
-      expect(parseBooleanInput("TRUE", false, "copy-from-commit")).toBe(true);
+      expect(parseBooleanInput("TRUE", false, "require-index")).toBe(true);
     });
   });
 
   describe("and the value is capitalised True", () => {
     it("should return true", () => {
-      expect(parseBooleanInput("True", false, "copy-from-commit")).toBe(true);
+      expect(parseBooleanInput("True", false, "require-index")).toBe(true);
     });
   });
 
@@ -142,23 +142,21 @@ describe("when parsing a boolean input", () => {
 
   describe("and the value is padded with whitespace", () => {
     it("should tolerate the padding and return the parsed boolean", () => {
-      expect(parseBooleanInput("  true \n", false, "copy-from-commit")).toBe(true);
+      expect(parseBooleanInput("  true \n", false, "require-index")).toBe(true);
     });
   });
 
   describe("and the value is a yes/no word", () => {
     it("should throw naming the offending input", () => {
-      expect(() => parseBooleanInput("yes", false, "copy-from-commit")).toThrow(
-        'Invalid value "yes" for `copy-from-commit`. Expected true or false.',
+      expect(() => parseBooleanInput("yes", false, "require-index")).toThrow(
+        'Invalid value "yes" for `require-index`. Expected true or false.',
       );
     });
   });
 
   describe("and the value is a numeric flag", () => {
     it("should throw naming the offending input", () => {
-      expect(() => parseBooleanInput("1", false, "copy-from-commit")).toThrow(
-        "for `copy-from-commit`",
-      );
+      expect(() => parseBooleanInput("1", false, "require-index")).toThrow("for `require-index`");
     });
   });
 });
@@ -682,32 +680,8 @@ describe("when reading the action inputs", () => {
       result = readInputs();
     });
 
-    it("should default the CDN base url", () => {
-      expect(result.cdnBaseUrl).toBe(DEFAULT_CDN_BASE_URL);
-    });
-
-    it("should default the rollout name to _site", () => {
-      expect(result.deploymentName).toBe(DEFAULT_ROLLOUT_NAME);
-    });
-
     it("should default the percentage to 100", () => {
       expect(result.percentage).toBe(100);
-    });
-
-    it("should default requireIndex to true", () => {
-      expect(result.requireIndex).toBe(true);
-    });
-
-    it("should default copy-from-commit to false", () => {
-      expect(result.copyFromCommit).toBe(false);
-    });
-
-    it("should default copyFromCommit to false", () => {
-      expect(result.copyFromCommit).toBe(false);
-    });
-
-    it("should default createGithubDeployment to true", () => {
-      expect(result.createGithubDeployment).toBe(true);
     });
 
     it("should default the environments to the dev channel only", () => {
@@ -728,59 +702,6 @@ describe("when reading the action inputs", () => {
     it("should read the package version from the repo-root package.json", () => {
       expect(result.packageVersion).toBe("1.2.3");
     });
-
-    it("should leave the base version unset when the input is absent", () => {
-      expect(result.baseVersion).toBeUndefined();
-    });
-  });
-
-  describe("and create-github-deployment is an empty string", () => {
-    let result: ActionInputs;
-
-    beforeEach(() => {
-      setInputs({ "create-github-deployment": "" });
-      result = readInputs();
-    });
-
-    it("should default createGithubDeployment to true instead of failing the run", () => {
-      expect(result.createGithubDeployment).toBe(true);
-    });
-  });
-
-  describe("and create-github-deployment is explicitly false", () => {
-    let result: ActionInputs;
-
-    beforeEach(() => {
-      setInputs({ "create-github-deployment": "false" });
-      result = readInputs();
-    });
-
-    it("should return createGithubDeployment as false", () => {
-      expect(result.createGithubDeployment).toBe(false);
-    });
-  });
-
-  describe("and copy-from-commit is given in uppercase", () => {
-    let result: ActionInputs;
-
-    beforeEach(() => {
-      setInputs({ "copy-from-commit": "TRUE" });
-      result = readInputs();
-    });
-
-    it("should return copy-from-commit as true", () => {
-      expect(result.copyFromCommit).toBe(true);
-    });
-  });
-
-  describe("and a boolean input has an unparseable value", () => {
-    beforeEach(() => {
-      setInputs({ "require-index": "maybe" });
-    });
-
-    it("should throw naming the input", () => {
-      expect(() => readInputs()).toThrow('Invalid value "maybe" for `require-index`');
-    });
   });
 
   describe("and the package-name and base-version inputs are provided", () => {
@@ -793,44 +714,6 @@ describe("when reading the action inputs", () => {
 
     it("should override the package name read from package.json", () => {
       expect(result.packageName).toBe("@dcl/account-site");
-    });
-
-    it("should override the base version read from package.json", () => {
-      expect(result.baseVersion).toBe("9.9.9");
-    });
-  });
-
-  describe("and the package.json has no version", () => {
-    beforeEach(() => {
-      fs.writeFileSync(
-        path.join(workspace, "package.json"),
-        JSON.stringify({ name: "@dcl/auth-site" }),
-      );
-    });
-
-    /**
-     * Reading the inputs must not demand it. A promotion supplies `version` and checks
-     * nothing out, so it has no package.json and needs no base version — refusing here
-     * killed that job before it reached the broker. The demand lives where a commit
-     * version is actually computed; see index.spec.
-     */
-    describe("and no base-version input is provided", () => {
-      it("should not throw, and should leave the base version unresolved", () => {
-        expect(readInputs().baseVersion).toBeUndefined();
-      });
-    });
-
-    describe("and a base-version input is provided", () => {
-      let result: ActionInputs;
-
-      beforeEach(() => {
-        setInputs({ "base-version": "2.0.0" });
-        result = readInputs();
-      });
-
-      it("should use the provided base version", () => {
-        expect(result.baseVersion).toBe("2.0.0");
-      });
     });
   });
 
@@ -950,20 +833,8 @@ describe("when reading the action inputs", () => {
       result = readInputs();
     });
 
-    it("should return the rollout name", () => {
-      expect(result.deploymentName).toBe("_beta");
-    });
-
     it("should return a zero percentage rather than coercing it to 100", () => {
       expect(result.percentage).toBe(0);
-    });
-
-    it("should return the commit", () => {
-      expect(result.commit).toBe("abc1234");
-    });
-
-    it("should return the CDN base url", () => {
-      expect(result.cdnBaseUrl).toBe("https://cdn.example.com");
     });
   });
 });

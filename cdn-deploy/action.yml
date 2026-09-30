@@ -6,59 +6,29 @@ branding:
 
 inputs:
   dist-path:
-    description: "Path to the pre-built site directory to upload (e.g. ./dist). The caller builds it. Must be a directory inside the workspace. Required for a normal deploy; omit for a release copy (`copy-from-commit`) or a repoint."
-    required: false
-  copy-from-commit:
-    description: "Release flow: when the target `version` is not yet in S3, fill it by copying the current commit's already-uploaded build. Off by default, so a `version` that is simply absent fails instead of being silently filled with whatever this commit built."
-    required: false
-    default: "false"
-  commit:
-    description: "Commit sha to compute the version from (manual deploy by commit). Defaults to the workflow commit. Must be a hex sha, not a branch name, and the repo must be checked out at it so the base version is read from package.json."
+    description: "Path to the pre-built site directory to upload (e.g. ./dist). The caller builds it. Must be a directory inside the workspace. Required unless the run only repoints an already-uploaded version."
     required: false
   package-name:
     description: "CDN prefix / S3 key root / KV record prefix. Defaults to `name` from the repo-root package.json. Validated as an npm package name."
     required: false
-  base-version:
-    description: "Base version the deployed version is built from. Defaults to `version` in the repo-root package.json; set it when the repo isn't checked out."
-    required: false
   deployment-environments:
     description: 'Environments to repoint, as a JSON array or comma list (e.g. ''["zone"]''). Empty array ''[]'' stages the bytes in S3 without touching any KV. Defaults to zone only — staging and production are promoted deliberately from a job that declares a GitHub environment.'
     required: false
-  deployment-name:
-    description: "Rollout name (key into the KV `records` map)."
-    required: false
-    default: "_site"
   percentage:
     description: "Rollout percentage (0-100) for the deployed version."
     required: false
     default: "100"
-  require-index:
-    description: "Fail a deploy when the folder has no index.html at its root (guards against an empty/broken build). Set to 'false' to deploy non-HTML asset bundles."
-    required: false
-    default: "true"
   version:
-    description: "Target version. Defaults to the computed commit version. Provide it to deploy under a specific version (e.g. a release tag), or alone to repoint the KV at an already-uploaded version. A target that is absent from S3 is an error unless `dist-path` or `copy-from-commit` says how to fill it."
+    description: "Target version. Defaults to the computed commit version. Provide it to deploy under a specific version (e.g. a release tag), or alone to repoint the KV at an already-uploaded version. A target that is absent from S3 is an error unless `dist-path` says how to fill it."
     required: false
-  create-github-deployment:
-    description: "Create a GitHub deployment + commit status for observability. Needs `permissions: { deployments: write, statuses: write }`."
-    required: false
-    default: "true"
   broker-url:
     description: "Base URL of the cdn-deploy broker. It holds the Cloudflare token and the right to write the CDN bucket, so this action holds neither."
     required: false
     default: "https://cdn-deploy.decentraland.org"
-  oidc-audience:
-    description: "Audience requested on the GitHub OIDC token. Must match what the broker expects; the calling job needs `permissions: { id-token: write }`."
-    required: false
-    default: "dcl-cdn-deploy"
   build-command:
     description: "Build the site inside this action, after the version is settled and before it is uploaded. The version is exported as CDN_DEPLOY_VERSION and written into package.json first, because every Decentraland site bakes its CDN base URL from the version at build time — a build that runs before the version is known emits HTML pointing at a prefix nothing was uploaded to. Leave empty to build yourself and pass `version` explicitly."
     required: false
     default: ""
-  cdn-base-url:
-    description: "CDN origin used to compute the cdn-url output."
-    required: false
-    default: "https://cdn.decentraland.org"
 
 outputs:
   version:
@@ -68,7 +38,7 @@ outputs:
     description: "The S3 key prefix that was uploaded: <package-name>/<version>."
     value: ${{ steps.deploy.outputs.s3-path }}
   cdn-url:
-    description: "<cdn-base-url>/<package-name>/<version> — where the worker serves the version from."
+    description: "https://cdn.decentraland.org/<package-name>/<version> — where the worker serves the version from."
     value: ${{ steps.deploy.outputs.cdn-url }}
   mode:
     description: "What the S3 step did: upload | copy | skip. Set before the KV write, so it is readable from an `if: always()` step even when the run later fails."
@@ -77,68 +47,21 @@ outputs:
 runs:
   using: "composite"
   steps:
-    # Only when this action owns the build. The version has to be settled first: it is
-    # exported as CDN_DEPLOY_VERSION and written into package.json, both read by the
-    # prebuild that computes VITE_BASE_URL.
-    - name: Resolve the deploy version
-      id: resolve
-      if: ${{ inputs.build-command != '' }}
-      shell: bash
-      run: node "$GITHUB_ACTION_PATH/dist/index.js"
-      env:
-        CDN_DEPLOY_STAGE: resolve
-        # dist-path is deliberately NOT passed here. The build has not run yet, so the
-        # folder does not exist, and readInputs validates a dist-path it is given -- which
-        # failed this stage before it could resolve anything. Nothing in the resolve stage
-        # reads it; the deploy step below gets it, once the bytes are there.
-        INPUT_COPY-FROM-COMMIT: ${{ inputs.copy-from-commit }}
-        INPUT_COMMIT: ${{ inputs.commit }}
-        INPUT_PACKAGE-NAME: ${{ inputs.package-name }}
-        INPUT_BASE-VERSION: ${{ inputs.base-version }}
-        INPUT_DEPLOYMENT-ENVIRONMENTS: ${{ inputs.deployment-environments }}
-        INPUT_DEPLOYMENT-NAME: ${{ inputs.deployment-name }}
-        INPUT_PERCENTAGE: ${{ inputs.percentage }}
-        INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}
-        INPUT_VERSION: ${{ inputs.version }}
-        INPUT_BROKER-URL: ${{ inputs.broker-url }}
-        INPUT_OIDC-AUDIENCE: ${{ inputs.oidc-audience }}
-        INPUT_CREATE-GITHUB-DEPLOYMENT: ${{ inputs.create-github-deployment }}
-        INPUT_CDN-BASE-URL: ${{ inputs.cdn-base-url }}
-        GITHUB_TOKEN: ${{ github.token }}
-
-    - name: Build
-      if: ${{ inputs.build-command != '' }}
-      shell: bash
-      run: ${{ inputs.build-command }}
-
+    # One step, not three. The version has to be settled before the build -- every site
+    # bakes its asset base URL from it -- and splitting that across composite steps meant
+    # the value had to cross a boundary through $GITHUB_ENV, which is job-wide and writable
+    # by anything the build runs. It also duplicated this env block verbatim, with one
+    # deliberate difference that broke a deploy and then needed its own test to guard.
     - name: Deploy to CDN and set rollout
       id: deploy
       shell: bash
       run: node "$GITHUB_ACTION_PATH/dist/index.js"
       env:
-        # Both pinned, and handed over as a step OUTPUT rather than through the job
-        # environment. `core.exportVariable` writes $GITHUB_ENV, which is job-wide and
-        # writable by anything the build runs -- a postinstall in any transitive dependency
-        # could set CDN_DEPLOY_STAGE=resolve and make this step return early, exit 0, and
-        # report a deploy that never happened. Step-level env outranks the job environment,
-        # so these two cannot be overridden from inside the build.
-        #
-        # Empty when there is no build-command: the resolve step is skipped, the output is
-        # "", and the deploy resolves the version itself.
-        CDN_DEPLOY_STAGE: deploy
-        CDN_DEPLOY_VERSION: ${{ steps.resolve.outputs.version }}
         INPUT_DIST-PATH: ${{ inputs.dist-path }}
-        INPUT_COPY-FROM-COMMIT: ${{ inputs.copy-from-commit }}
-        INPUT_COMMIT: ${{ inputs.commit }}
+        INPUT_BUILD-COMMAND: ${{ inputs.build-command }}
         INPUT_PACKAGE-NAME: ${{ inputs.package-name }}
-        INPUT_BASE-VERSION: ${{ inputs.base-version }}
         INPUT_DEPLOYMENT-ENVIRONMENTS: ${{ inputs.deployment-environments }}
-        INPUT_DEPLOYMENT-NAME: ${{ inputs.deployment-name }}
         INPUT_PERCENTAGE: ${{ inputs.percentage }}
-        INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_BROKER-URL: ${{ inputs.broker-url }}
-        INPUT_OIDC-AUDIENCE: ${{ inputs.oidc-audience }}
-        INPUT_CREATE-GITHUB-DEPLOYMENT: ${{ inputs.create-github-deployment }}
-        INPUT_CDN-BASE-URL: ${{ inputs.cdn-base-url }}
         GITHUB_TOKEN: ${{ github.token }}

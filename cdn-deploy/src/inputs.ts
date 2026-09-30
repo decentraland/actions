@@ -36,8 +36,8 @@ function asEnvironment(value: string): Environment {
  *
  * `core.getBooleanInput` throws on `""`, and a composite action's `default:`
  * only applies when the key is absent from `with:` — so the common wrapper
- * pattern `require-index: ${{ inputs.require-index }}` with the caller omitting
- * that input would otherwise kill the run before it starts. Case-insensitive on
+ * pattern `some-flag: ${{ inputs.some-flag }}` with the caller omitting that
+ * input would otherwise kill the run before it starts. Case-insensitive on
  * purpose too: `TRUE` silently meaning `false` is a trap.
  */
 export function parseBooleanInput(raw: string, fallback: boolean, name: string): boolean {
@@ -331,14 +331,9 @@ export function readInputs(): ActionInputs {
   // runs with no checkout — nothing to build, the bytes are already in S3 — so throwing
   // here refused a job that never needed a base version at all.
   //
-  // The two are kept apart on purpose. `base-version` is a deliberate override and wins
-  // outright; package.json is only a FLOOR, because the newest release is the real anchor.
-  // Collapsing them is what let `@dcl/sites` build `0.0.1-…` while serving 0.69.x — its
+  // package.json is only a FLOOR; the newest release is the real anchor. Treating it as
+  // the version is what let `@dcl/sites` build `0.0.1-…` while serving 0.69.x -- its
   // package.json had been stale for 69 minor versions, and nothing read it until now.
-  const baseVersionInput = core.getInput("base-version");
-  const baseVersion = baseVersionInput
-    ? validateVersionShape(baseVersionInput, "the `base-version` input")
-    : undefined;
   const packageVersion = pkg.version
     ? validateVersionShape(pkg.version, "the repo-root package.json")
     : undefined;
@@ -350,6 +345,10 @@ export function readInputs(): ActionInputs {
   const environments: Environment[] =
     envInput !== "" ? parseEnvironments(envInput) : DEFAULT_ENVIRONMENTS; // may be [] (stage)
 
+  // Trimmed so a caller's stray newline does not become a build that runs an empty
+  // command and reports success.
+  const buildCommand = core.getInput("build-command").trim() || undefined;
+
   const versionInput = core.getInput("version");
   const version = versionInput
     ? validateVersionShape(versionInput, "the `version` input")
@@ -357,23 +356,12 @@ export function readInputs(): ActionInputs {
 
   return {
     distPath,
+    buildCommand,
     packageName,
-    baseVersion,
     packageVersion,
     environments,
-    deploymentName: core.getInput("deployment-name") || DEFAULT_ROLLOUT_NAME,
     percentage: parsePercentage(core.getInput("percentage")),
     version,
-    commit: core.getInput("commit") || undefined,
-    requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
-    copyFromCommit: parseBooleanInput(core.getInput("copy-from-commit"), false, "copy-from-commit"),
-    createGithubDeployment: parseBooleanInput(
-      core.getInput("create-github-deployment"),
-      true,
-      "create-github-deployment",
-    ),
-    cdnBaseUrl: core.getInput("cdn-base-url") || DEFAULT_CDN_BASE_URL,
     brokerUrl: core.getInput("broker-url") || DEFAULT_BROKER_URL,
-    oidcAudience: core.getInput("oidc-audience") || DEFAULT_OIDC_AUDIENCE,
   };
 }

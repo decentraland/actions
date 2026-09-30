@@ -66,9 +66,9 @@ export function resolveBaseVersion(opts: {
     if (!packageVersion) {
       throw new Error(
         "Unable to resolve a base version: this repository has no published release and the " +
-          "repo-root package.json has no `version`. Check the repository out in this job, publish " +
-          "a release, or set the `base-version` input. Only a run that has to compute a commit " +
-          "version needs one: pass `version` to deploy or repoint a version you already know.",
+          "repo-root package.json has no `version`. Check the repository out in this job, or " +
+          "publish a release. Only a run that has to compute a version needs one -- pass " +
+          "`version` to deploy under a name you choose, or to repoint one already in S3.",
       );
     }
     return packageVersion;

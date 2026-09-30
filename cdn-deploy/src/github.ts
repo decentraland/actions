@@ -42,7 +42,7 @@ export function statusSha(context: typeof github.context = github.context): stri
  * no-op when disabled or when no token/context is available (e.g. forks).
  */
 export function createObservability(opts: {
-  enabled: boolean;
+  enabled?: boolean;
   token?: string;
   /** Environments being repointed; empty for a stage-only run. */
   environments: Environment[];

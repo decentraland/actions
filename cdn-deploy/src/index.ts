@@ -1,14 +1,19 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { folderHasIndexHtml, readInputs, validateVersionShape } from "./inputs";
+import {
+  DEFAULT_CDN_BASE_URL,
+  DEFAULT_ROLLOUT_NAME,
+  folderHasIndexHtml,
+  readInputs,
+} from "./inputs";
 import { computeVersion, resolveBaseVersion } from "./version";
-import { resolveEnsurePlan } from "./plan";
 import { uploadFolderToS3, writeCompletionMarker } from "./s3";
 import { BrokerError, createBrokerClient, type BrokerClient, type RolloutResult } from "./broker";
 import { createBrokeredCredentials } from "./credentials";
 import { createObservability, latestReleaseVersion } from "./github";
-import { ActionInputs, Environment, S3Action } from "./types";
+import { ActionInputs, DEFAULT_OIDC_AUDIENCE, Environment, S3Action } from "./types";
 import * as fs from "fs";
+import { spawn } from "child_process";
 
 /**
  * Put the resolved version where the build will look for it.
@@ -31,13 +36,47 @@ function writePackageVersion(version: string): void {
   }
 }
 
+/**
+ * Run the caller's build, with the settled version already in the environment.
+ *
+ * Spawned rather than interpolated into a `run:` block. As a composite step the command was
+ * spliced into the generated script at expansion time, so a caller writing
+ * `build-command: npm run build -- --tag ${{ github.event.pull_request.title }}` handed a
+ * title containing shell metacharacters straight to bash. As an argv string it is data.
+ *
+ * `-e -o pipefail` because a build is usually a pipeline and a failure in the middle of one
+ * must not be reported as success. Output is streamed rather than buffered so a long build
+ * shows progress, and grouped so it stays collapsible in the log.
+ */
+async function runBuild(command: string): Promise<void> {
+  await core.group(`Build: ${command}`, async () => {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("bash", ["-e", "-o", "pipefail", "-c", command], { stdio: "inherit" });
+      child.on("error", reject);
+      child.on("close", (code, signal) => {
+        if (code === 0) return resolve();
+        reject(
+          new Error(
+            signal
+              ? `The build was killed by ${signal}: \`${command}\`.`
+              : `The build failed with exit code ${code}: \`${command}\`.`,
+          ),
+        );
+      });
+    });
+  });
+}
+
 async function run(): Promise<void> {
   const inputs = readInputs();
   const { packageName } = inputs;
 
   // `commit` lets a manual deploy target a specific commit's build; otherwise it's the
   // workflow's commit.
-  const sha = inputs.commit || github.context.sha;
+  // The workflow's own commit. There used to be a `commit` input for "deploy this other
+  // commit's build", which stopped being possible once the run id became part of the
+  // version -- a past build's version cannot be reconstructed from its sha alone.
+  const sha = github.context.sha;
 
   // Lazy, deliberately. Computing it eagerly meant every run had to resolve a base
   // version, including a promotion that supplies `version` and checks nothing out — which
@@ -49,36 +88,26 @@ async function run(): Promise<void> {
   const commitVersion = async (): Promise<string> => {
     if (resolved) return resolved;
 
-    // An explicit `base-version` wins outright; otherwise the newest release anchors it and
-    // package.json is only a floor. package.json alone is not enough: it is `0.0.1` in
-    // repositories serving 0.69.x, because oddish derived the version from the registry and
-    // nothing ever wrote it back.
-    const baseVersion =
-      inputs.baseVersion ||
-      resolveBaseVersion({
-        packageVersion: inputs.packageVersion,
-        latestRelease: await latestReleaseVersion({ token: process.env.GITHUB_TOKEN }),
-      });
+    // The newest release anchors the base; package.json is only a floor. package.json
+    // alone is not enough: it is `0.0.1` in repositories serving 0.69.x, because oddish
+    // derived the version from the registry and nothing ever wrote it back.
+    const baseVersion = resolveBaseVersion({
+      packageVersion: inputs.packageVersion,
+      latestRelease: await latestReleaseVersion({ token: process.env.GITHUB_TOKEN }),
+    });
 
     resolved = computeVersion({ baseVersion, sha, runId: String(github.context.runId) });
     core.info(`base version:  ${baseVersion}`);
     return resolved;
   };
 
-  // `CDN_DEPLOY_VERSION` is handed over by the resolve stage of the same run, as a step
-  // output pinned in action.yml rather than through $GITHUB_ENV -- the job environment is
-  // writable by anything the build runs. Reusing it keeps the deploy on the version the
-  // bytes were actually built for, and saves asking GitHub for the release list twice.
-  //
-  // Validated anyway: it arrives as a string from outside this process and goes straight
-  // into the S3 key.
-  const handedOver = process.env.CDN_DEPLOY_VERSION
-    ? validateVersionShape(process.env.CDN_DEPLOY_VERSION, "CDN_DEPLOY_VERSION")
-    : undefined;
-  const targetVersion = inputs.version || handedOver || (await commitVersion());
+  // One process resolves it and one process uses it, so the version never leaves this
+  // scope. It used to cross a step boundary through $GITHUB_ENV, which also meant a second
+  // invocation in the same job silently inherited the first one's version.
+  const targetVersion = inputs.version || (await commitVersion());
 
   const remoteFolder = `${packageName}/${targetVersion}`;
-  const cdnUrl = `${inputs.cdnBaseUrl}/${packageName}/${targetVersion}`;
+  const cdnUrl = `${DEFAULT_CDN_BASE_URL}/${packageName}/${targetVersion}`;
   const envs = inputs.environments;
 
   core.setOutput("version", targetVersion);
@@ -91,37 +120,37 @@ async function run(): Promise<void> {
   core.info(`cdn url:      ${cdnUrl}`);
   core.info(`broker:       ${inputs.brokerUrl}`);
 
-  // The resolve stage of a `build-command` run: settle the version, publish it for the
-  // build, and stop. The deploy stage that follows reuses it rather than resolving again,
-  // so the bytes and the prefix cannot disagree.
+  // The build runs here, between settling the version and uploading, because every
+  // Decentraland site bakes its asset base URL from the version at build time: a build that
+  // starts before the version is known emits HTML pointing at a prefix nothing was ever
+  // uploaded to.
   //
-  // Every Decentraland site bakes its asset base URL from the version at build time, so a
-  // build that starts before the version is settled produces HTML pointing at a prefix
-  // nothing was ever uploaded to.
-  if (process.env.CDN_DEPLOY_STAGE === "resolve") {
-    // The contract going forward: read this, not package.json.
+  // In-process rather than as a separate composite step. The step split needed the version
+  // to cross a boundary, and the only way across was $GITHUB_ENV -- which is job-wide and
+  // writable by anything the build runs, so a postinstall could set the stage flag and turn
+  // the deploy into a green no-op. Here the version is a local variable and there is no
+  // flag to forge.
+  if (inputs.buildCommand) {
+    // Exported for builds that read it, and written into package.json because that is where
+    // every site's prebuild reads it from today. The same value in two places the build
+    // already looks, so no site has to change to be deployed correctly; those prebuilds
+    // rewrite package.json themselves, so it is already scratch during CI.
     core.exportVariable("CDN_DEPLOY_VERSION", targetVersion);
-
-    // And written into package.json as well, because that is where every site's prebuild
-    // reads it from today. Not a second source of truth -- the same value, put where the
-    // existing builds already look, so no site has to change to be deployed correctly.
-    // Those prebuilds rewrite this file themselves, so it is already scratch during CI.
     writePackageVersion(targetVersion);
 
-    core.info("Resolved the version for the build. Nothing uploaded or rolled out yet.");
-    return;
+    await runBuild(inputs.buildCommand);
   }
 
-  const broker = createBrokerClient({ baseUrl: inputs.brokerUrl, audience: inputs.oidcAudience });
+  const broker = createBrokerClient({ baseUrl: inputs.brokerUrl, audience: DEFAULT_OIDC_AUDIENCE });
 
   const observability = createObservability({
-    enabled: inputs.createGithubDeployment,
+    enabled: true,
     token: process.env.GITHUB_TOKEN,
     environments: envs,
     packageName,
     version: targetVersion,
     cdnUrl,
-    sha: inputs.commit,
+    sha,
   });
   await observability.start();
 
@@ -129,17 +158,17 @@ async function run(): Promise<void> {
   // run that failed before the S3 step ran at all.
   let s3Action: S3Action | "not-attempted" = "not-attempted";
   try {
-    if (inputs.distPath && inputs.requireIndex && !folderHasIndexHtml(inputs.distPath)) {
+    if (inputs.distPath && !folderHasIndexHtml(inputs.distPath)) {
       throw new Error(
         `No index.html found at the root of "${inputs.distPath}". The build looks empty or ` +
-          "misconfigured. Set `require-index: false` to deploy anyway.",
+          "misconfigured.",
       );
     }
 
     // A pure repoint writes nothing, so it needs no credentials — and asking for them would
     // make a rollback depend on STS. Whether the bytes are really there is checked
     // authoritatively by the broker before it touches the rollout record.
-    const hasBytesToWrite = !!(inputs.distPath || inputs.copyFromCommit);
+    const hasBytesToWrite = !!inputs.distPath;
 
     // Nothing to write and nowhere to publish is not a deploy, and both paths below would
     // call it one: "Repoint only -- no S3 write", then "Stage only: bytes are in S3, no
@@ -151,15 +180,13 @@ async function run(): Promise<void> {
     // later when someone promotes that tag and finds nothing behind it.
     if (!hasBytesToWrite && envs.length === 0) {
       throw new Error(
-        `This run would do nothing: no \`dist-path\` to upload, \`copy-from-commit\` not set, ` +
-          "and no environment to roll out to. Pass `dist-path` to publish a build, or name an " +
-          "environment in `deployment-environments` to repoint one at a version already in S3.",
+        "This run would do nothing: there is no `dist-path` to upload and no environment to " +
+          "roll out to. Pass `dist-path` to publish a build, or name an environment in " +
+          "`deployment-environments` to repoint one at a version already in S3.",
       );
     }
 
-    const needsWrite = hasBytesToWrite;
-
-    if (needsWrite) {
+    if (hasBytesToWrite) {
       // Decided BEFORE any credential is requested, so the release path never asks for
       // one. It used to: `requestCredentials` ran unconditionally here, which meant every
       // release minted a 900-second write session over the tag prefix and then handed the
@@ -172,14 +199,6 @@ async function run(): Promise<void> {
       //
       // There is no "is it already there?" input: the broker refuses to mint for a
       // published version, and that refusal is handled below.
-      const plan = resolveEnsurePlan({
-        folderPresent: !!inputs.distPath,
-        targetVersion,
-        // Only the copy path reads this, and only that path needs a base version.
-        commitVersion: inputs.copyFromCommit ? await commitVersion() : undefined,
-        copyFromCommit: inputs.copyFromCommit,
-      });
-
       // A published version is immutable, and the broker refuses to write one rather than
       // trusting the caller to skip. That refusal is the authoritative "already deployed"
       // answer on both paths, so it is a skip and not a failure -- re-running a deploy
@@ -198,7 +217,7 @@ async function run(): Promise<void> {
         return "skip";
       };
 
-      if (plan.s3 === "upload") {
+      {
         let grant;
         try {
           grant = await broker.requestCredentials({ packageName, version: targetVersion });
@@ -221,22 +240,6 @@ async function run(): Promise<void> {
           });
           s3Action = "upload";
         }
-      } else if (plan.s3 === "copy") {
-        // No credentials at all: the copy is server-side and the broker writes the marker.
-        try {
-          await copyRelease(broker, {
-            packageName,
-            targetVersion,
-            sourceVersion: plan.source as string,
-          });
-          s3Action = "copy";
-        } catch (e) {
-          if (!isAlreadyPublished(e)) throw e;
-          s3Action = reportAlreadyPublished();
-        }
-      } else {
-        core.info(`> ${remoteFolder} already in S3 — skipping upload/copy.`);
-        s3Action = "skip";
       }
     } else {
       core.info("> Repoint only — no S3 write.");
@@ -349,118 +352,6 @@ async function uploadToCdn(
 }
 
 /**
- * How far the resumable copy is allowed to go before the action gives up.
- *
- * A release of the largest site is a handful of calls; hundreds means something is wrong.
- * The source wait is generous because it is legitimately waiting on another workflow, but
- * it is not unbounded -- a source build that failed will never land, and burning the job's
- * whole timeout reports "timed out" instead of naming the real cause.
- */
-export const RELEASE_LIMITS = {
-  maxCalls: 300,
-  maxStalls: 3,
-  maxSourceWaitMs: 30 * 60_000,
-};
-
-/**
- * Drives the broker's resumable copy to completion.
- *
- * No AWS credentials are involved: the copy happens inside S3, issued by the broker. The
- * loop exists because API Gateway caps a single call at 29 seconds and a site can be a few
- * thousand objects once the compressed variants are counted.
- */
-async function copyRelease(
-  broker: BrokerClient,
-  ctx: { packageName: string; targetVersion: string; sourceVersion: string },
-  limits: typeof RELEASE_LIMITS = RELEASE_LIMITS,
-): Promise<void> {
-  await core.group(`Releasing ${ctx.sourceVersion} -> ${ctx.targetVersion}`, async () => {
-    let continuation: string | undefined;
-    let calls = 0;
-    let waitedMs = 0;
-    let lastCopied = -1;
-    let stalls = 0;
-
-    for (;;) {
-      // Bounded on three axes, because every one of them has hung a job: too many calls,
-      // too long waiting for a source that will never land, and a broker that keeps
-      // answering "not done" without getting further.
-      // Counts copy attempts only. Source waits have their own budget below -- sharing
-      // one meant a broker sending a short Retry-After burned the call cap in minutes and
-      // then reported "the copy did not finish", naming the wrong thing entirely.
-      // `>=`, checked before the call that would exceed it: `>` let a 301st call through
-      // and then reported it as 300.
-      if (calls >= limits.maxCalls) {
-        throw new Error(
-          `The release copy did not finish after ${limits.maxCalls} calls. Something is wrong ` +
-            "with the broker or the source prefix; check the run log and retry.",
-        );
-      }
-
-      let progress;
-      try {
-        calls++;
-        progress = await broker.release({
-          packageName: ctx.packageName,
-          version: ctx.targetVersion,
-          sourceVersion: ctx.sourceVersion,
-          continuation,
-        });
-      } catch (e) {
-        // A release routinely races the commit build that produced its source, so this is
-        // a wait rather than a failure -- but only for as long as that build could
-        // plausibly still be running.
-        if (e instanceof BrokerError && e.code === "source_not_ready") {
-          if (waitedMs >= limits.maxSourceWaitMs) {
-            throw new Error(
-              `The build being released (${ctx.sourceVersion}) still has not finished after ` +
-                `${Math.round(limits.maxSourceWaitMs / 60_000)} minutes. It most likely failed — check that ` +
-                "workflow rather than waiting on this one.",
-            );
-          }
-          // A broker sending Retry-After: 0 would otherwise spin.
-          const waitSeconds = Math.max(e.retryAfterSeconds ?? 10, 1);
-          core.info(`Source build not finished yet; waiting ${waitSeconds}s.`);
-          await sleep(waitSeconds * 1000);
-          waitedMs += waitSeconds * 1000;
-          calls--; // it never got as far as copying anything
-          continue;
-        }
-        throw e;
-      }
-
-      if (progress.complete) {
-        core.info(`Copied ${progress.objectCount ?? progress.copied} objects.`);
-        return;
-      }
-
-      // "Not done" with nothing to resume from would restart the copy every iteration,
-      // with no pause between attempts.
-      if (!progress.continuation) {
-        throw new Error(
-          "The broker reported the release copy as unfinished but gave nothing to resume from. " +
-            "Retry the job; if it persists the broker needs attention.",
-        );
-      }
-
-      // Same token and no new objects means it is not getting anywhere.
-      stalls =
-        progress.copied > lastCopied || progress.continuation !== continuation ? 0 : stalls + 1;
-      if (stalls >= limits.maxStalls) {
-        throw new Error(
-          `The release copy stopped making progress at ${progress.copied} objects. Retry the job; ` +
-            "if it persists the broker needs attention.",
-        );
-      }
-
-      lastCopied = progress.copied;
-      continuation = progress.continuation;
-      core.info(`Copied ${progress.copied} objects so far, continuing…`);
-    }
-  });
-}
-
-/**
  * One call per environment.
  *
  * Attempts every one and aggregates the failures rather than stopping at the first:
@@ -483,7 +374,7 @@ async function rolloutEnvironments(
           version: ctx.targetVersion,
           environment,
           percentage: inputs.percentage,
-          rolloutName: inputs.deploymentName,
+          rolloutName: DEFAULT_ROLLOUT_NAME,
         });
         succeeded.push(result);
         core.info(`${environment}: ${result.key} -> ${ctx.targetVersion} @ ${inputs.percentage}%`);
