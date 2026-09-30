@@ -1,0 +1,67 @@
+name: "Deploy static site to CDN"
+description: "Upload a pre-built site folder straight to S3 (via GitHub OIDC) and set the Cloudflare KV rollout, in a single step."
+branding:
+  icon: "upload-cloud"
+  color: "blue"
+
+inputs:
+  dist-path:
+    description: "Path to the pre-built site directory to upload (e.g. ./dist). The caller builds it. Must be a directory inside the workspace. Required unless the run only repoints an already-uploaded version."
+    required: false
+  package-name:
+    description: "CDN prefix / S3 key root / KV record prefix. Defaults to `name` from the repo-root package.json. Validated as an npm package name."
+    required: false
+  deployment-environments:
+    description: 'Environments to repoint, as a JSON array or comma list (e.g. ''["zone"]''). Empty array ''[]'' stages the bytes in S3 without touching any KV. Defaults to zone only — staging and production are promoted deliberately from a job that declares a GitHub environment.'
+    required: false
+  percentage:
+    description: "Rollout percentage (0-100) for the deployed version."
+    required: false
+    default: "100"
+  version:
+    description: "Target version. Defaults to the computed commit version. Provide it to deploy under a specific version (e.g. a release tag), or alone to repoint the KV at an already-uploaded version. A target that is absent from S3 is an error unless `dist-path` says how to fill it."
+    required: false
+  broker-url:
+    description: "Base URL of the cdn-deploy broker. It holds the Cloudflare token and the right to write the CDN bucket, so this action holds neither."
+    required: false
+    default: "https://cdn-deploy.decentraland.org"
+  build-command:
+    description: "Build the site inside this action, after the version is settled and before it is uploaded. The version is exported as CDN_DEPLOY_VERSION and written into package.json first, because every Decentraland site bakes its CDN base URL from the version at build time — a build that runs before the version is known emits HTML pointing at a prefix nothing was uploaded to. Leave empty to build yourself and pass `version` explicitly."
+    required: false
+    default: ""
+
+outputs:
+  version:
+    description: "The deployed version (computed snapshot, or the `version` input)."
+    value: ${{ steps.deploy.outputs.version }}
+  s3-path:
+    description: "The S3 key prefix that was uploaded: <package-name>/<version>."
+    value: ${{ steps.deploy.outputs.s3-path }}
+  cdn-url:
+    description: "https://cdn.decentraland.org/<package-name>/<version> — where the worker serves the version from."
+    value: ${{ steps.deploy.outputs.cdn-url }}
+  mode:
+    description: "What the S3 step did: upload | copy | skip. Set before the KV write, so it is readable from an `if: always()` step even when the run later fails."
+    value: ${{ steps.deploy.outputs.mode }}
+
+runs:
+  using: "composite"
+  steps:
+    # One step, not three. The version has to be settled before the build -- every site
+    # bakes its asset base URL from it -- and splitting that across composite steps meant
+    # the value had to cross a boundary through $GITHUB_ENV, which is job-wide and writable
+    # by anything the build runs. It also duplicated this env block verbatim, with one
+    # deliberate difference that broke a deploy and then needed its own test to guard.
+    - name: Deploy to CDN and set rollout
+      id: deploy
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/dist/index.js"
+      env:
+        INPUT_DIST-PATH: ${{ inputs.dist-path }}
+        INPUT_BUILD-COMMAND: ${{ inputs.build-command }}
+        INPUT_PACKAGE-NAME: ${{ inputs.package-name }}
+        INPUT_DEPLOYMENT-ENVIRONMENTS: ${{ inputs.deployment-environments }}
+        INPUT_PERCENTAGE: ${{ inputs.percentage }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_BROKER-URL: ${{ inputs.broker-url }}
+        GITHUB_TOKEN: ${{ github.token }}
