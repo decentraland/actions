@@ -81101,6 +81101,8 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.MINIMUM_NODE_MAJOR = void 0;
+exports.assertSupportedNode = assertSupportedNode;
 exports.reportFailure = reportFailure;
 exports.run = run;
 const core = __importStar(__nccwpck_require__(37484));
@@ -81160,7 +81162,35 @@ async function runBuild(command) {
         });
     });
 }
+/**
+ * The lowest node this action's bundle is built and tested against.
+ *
+ * Must match `engines.node` in package.json and `.nvmrc`; a test asserts the three agree,
+ * because nothing else would notice them drifting.
+ */
+exports.MINIMUM_NODE_MAJOR = 24;
+/**
+ * Refuse a runtime older than the bundle was built for.
+ *
+ * The action runs as `node "$GITHUB_ACTION_PATH/dist/index.js"`, and that `node` resolves
+ * from PATH -- so it is whatever version the caller's `actions/setup-node` installed, not
+ * anything this repository controls. `engines` is not enforced for a bare `node`
+ * invocation, so a job pinning an older node runs this bundle anyway and finds out when
+ * some dependency reaches for an API that is not there. That failure names a library, not
+ * the cause.
+ *
+ * Checked first, before inputs, so the message is not buried under a validation error.
+ */
+function assertSupportedNode(version = process.version) {
+    const major = Number.parseInt(version.replace(/^v/, ""), 10);
+    if (!Number.isFinite(major) || major < exports.MINIMUM_NODE_MAJOR) {
+        throw new Error(`This action needs Node ${exports.MINIMUM_NODE_MAJOR} or newer; this job is running ${version}. ` +
+            "The version comes from whatever `actions/setup-node` put on PATH, so raise " +
+            `\`node-version\` in the job that calls this action — for example \`node-version: ${exports.MINIMUM_NODE_MAJOR}.x\`.`);
+    }
+}
 async function run() {
+    assertSupportedNode();
     const inputs = (0, inputs_1.readInputs)();
     const { packageName } = inputs;
     // `commit` lets a manual deploy target a specific commit's build; otherwise it's the

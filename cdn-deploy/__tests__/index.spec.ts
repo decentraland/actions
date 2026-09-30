@@ -802,4 +802,33 @@ describe("when running the cdn-deploy action", () => {
       });
     });
   });
+
+  /**
+   * The guard has its own unit tests, but those pass whether or not `run()` calls it. This
+   * asserts the wiring, and the ordering claim with it: checked before inputs, so the
+   * message is not buried under a validation error about something the caller cannot fix
+   * until node is right.
+   */
+  describe("and the job set up an older node than the bundle needs", () => {
+    const actualVersion = process.version;
+
+    const pretendNode = (version: string) =>
+      Object.defineProperty(process, "version", { value: version, configurable: true });
+
+    afterEach(() => pretendNode(actualVersion));
+
+    it("should refuse the run", async () => {
+      pretendNode("v18.20.4");
+
+      await expect(run()).rejects.toThrow(/needs Node 24 or newer/);
+    });
+
+    it("should refuse before reading any input", async () => {
+      pretendNode("v18.20.4");
+
+      await run().catch(() => undefined);
+
+      expect(readInputsMock).not.toHaveBeenCalled();
+    });
+  });
 });

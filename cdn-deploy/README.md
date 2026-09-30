@@ -94,6 +94,32 @@ An upload writes `<package>/<version>/.deploy-complete.json` as its **last** obj
 
 This exists because "does any object exist under the prefix?" answers yes as soon as the first file lands, so a crashed or cancelled upload reads as deployed and a rollout would put a half-written site in front of users. It is a guard against crashes, not against a hostile caller — a caller is already authorised to write that whole prefix.
 
+## What the calling job must set up
+
+The action installs nothing and sets up no toolchain: it runs `build-command` as a child
+process, so the build uses whatever `actions/setup-node` put on `PATH`. Node version, npm
+cache and registry auth stay with the repository, where they belong.
+
+```yaml
+- uses: actions/checkout@...
+- uses: actions/setup-node@...
+  with:
+    node-version: 24.x
+    cache: npm
+- run: npm ci
+- uses: decentraland/actions/cdn-deploy@...
+  with:
+    build-command: npm run build
+```
+
+That `node` is also what runs the action itself — `node "$GITHUB_ACTION_PATH/dist/index.js"`
+resolves from `PATH` — so the job's node version is the action's runtime too. The bundle
+needs **Node 24 or newer** and refuses anything older up front, naming the version it found,
+rather than failing later inside whichever dependency reaches for a missing API.
+
+Job-level `env:` for anything the build needs (`SENTRY_AUTH_TOKEN` and the like): a
+composite action's steps do not inherit `env:` set on the step that calls it.
+
 ## Inputs
 
 | Input                     | Required | Default                               | Description                                                                                                                                                                                                                                                                                                                                                                                                          |

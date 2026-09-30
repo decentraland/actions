@@ -67,7 +67,41 @@ async function runBuild(command: string): Promise<void> {
   });
 }
 
+/**
+ * The lowest node this action's bundle is built and tested against.
+ *
+ * Must match `engines.node` in package.json and `.nvmrc`; a test asserts the three agree,
+ * because nothing else would notice them drifting.
+ */
+export const MINIMUM_NODE_MAJOR = 24;
+
+/**
+ * Refuse a runtime older than the bundle was built for.
+ *
+ * The action runs as `node "$GITHUB_ACTION_PATH/dist/index.js"`, and that `node` resolves
+ * from PATH -- so it is whatever version the caller's `actions/setup-node` installed, not
+ * anything this repository controls. `engines` is not enforced for a bare `node`
+ * invocation, so a job pinning an older node runs this bundle anyway and finds out when
+ * some dependency reaches for an API that is not there. That failure names a library, not
+ * the cause.
+ *
+ * Checked first, before inputs, so the message is not buried under a validation error.
+ */
+export function assertSupportedNode(version: string = process.version): void {
+  const major = Number.parseInt(version.replace(/^v/, ""), 10);
+
+  if (!Number.isFinite(major) || major < MINIMUM_NODE_MAJOR) {
+    throw new Error(
+      `This action needs Node ${MINIMUM_NODE_MAJOR} or newer; this job is running ${version}. ` +
+        "The version comes from whatever `actions/setup-node` put on PATH, so raise " +
+        `\`node-version\` in the job that calls this action — for example \`node-version: ${MINIMUM_NODE_MAJOR}.x\`.`,
+    );
+  }
+}
+
 async function run(): Promise<void> {
+  assertSupportedNode();
+
   const inputs = readInputs();
   const { packageName } = inputs;
 
