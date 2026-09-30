@@ -82,8 +82,7 @@ describe("when a README shows how to call the action", () => {
 
   /**
    * Without this the suite is quietly optional: a snippet that fails to parse yields no
-   * steps, so every assertion below simply stops running for it. Found by mutating a
-   * snippet into malformed yaml and watching the test count drop instead of go red.
+   * steps, so every assertion below stops running for it without anything going red.
    */
   it("should find a call in every block that mentions the action", () => {
     const blocks = blocksMentioningTheAction().map((b) => `${b.readme}:${b.line}`);

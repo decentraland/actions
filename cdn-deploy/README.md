@@ -116,7 +116,7 @@ cache and registry auth stay with the repository, where they belong.
 
 That `node` is also what runs the action itself — `node "$GITHUB_ACTION_PATH/dist/index.js"`
 resolves from `PATH` — so the job's node version is the action's runtime too. The bundle
-needs **Node 24 or newer** and refuses anything older up front, naming the version it found,
+needs **Node 20 or newer** and refuses anything older up front, naming the version it found,
 rather than failing later inside whichever dependency reaches for a missing API.
 
 Put anything the build needs (`SENTRY_AUTH_TOKEN` and the like) in **job-level** `env:`.

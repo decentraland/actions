@@ -17,11 +17,9 @@ import * as semver from "semver";
  * - With a `-` instead of the `.`, `<runId>-commit-<sha>` is one alphanumeric identifier
  *   compared lexically, which works only while every run id has the same digit count.
  *
- * An earlier version of this file omitted the run id on purpose, so that a release could
- * reconstruct the commit version it was copying. That reason is gone: releases rebuild
- * under the tag rather than copying, because every site bakes its asset base from the
- * version at build time. A re-run keeps its run id, so re-running a failed job still
- * resolves to the same prefix.
+ * A version is not reconstructable from a commit sha alone, which is why a release
+ * rebuilds under its tag rather than copying an existing build. A re-run keeps its run id,
+ * so retrying a failed job resolves to the same prefix.
  */
 
 const SHA_RE = /^[0-9a-f]{7,40}$/i;
