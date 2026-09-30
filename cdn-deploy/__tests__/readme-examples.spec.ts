@@ -27,7 +27,7 @@ const blocksMentioningTheAction = (): Array<{ readme: string; line: number }> =>
   const out: Array<{ readme: string; line: number }> = [];
   for (const [name, file] of READMES) {
     const text = fs.readFileSync(file, "utf8");
-    for (const block of text.matchAll(/```yaml\n([\s\S]*?)```/g)) {
+    for (const block of text.matchAll(/```ya?ml\n([\s\S]*?)```/g)) {
       if (!block[1].includes("cdn-deploy@")) continue;
       out.push({ readme: name, line: text.slice(0, block.index).split("\n").length });
     }
@@ -41,7 +41,7 @@ function examples(): Example[] {
 
   for (const [name, file] of READMES) {
     const text = fs.readFileSync(file, "utf8");
-    for (const block of text.matchAll(/```yaml\n([\s\S]*?)```/g)) {
+    for (const block of text.matchAll(/```ya?ml\n([\s\S]*?)```/g)) {
       const body = block[1];
       if (!body.includes("cdn-deploy@")) continue;
       const line = text.slice(0, block.index).split("\n").length;
@@ -108,7 +108,10 @@ describe("when a README shows how to call the action", () => {
     (_where, example) => {
       const w = (example as Example).with;
 
-      if (w["build-command"]) expect(w["dist-path"]).toBeDefined();
+      // Truthiness, not presence: `dist-path: ""` reads as absent to the action
+      // (`hasBytesToWrite = !!inputs.distPath`), so toBeDefined would pass a snippet the
+      // action rejects.
+      if (w["build-command"]) expect(w["dist-path"]).toBeTruthy();
     },
   );
 });

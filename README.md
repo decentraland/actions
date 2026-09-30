@@ -160,19 +160,19 @@ The calling job needs `permissions: { id-token: write, contents: read, deploymen
 
 All seven are optional; the defaults come from the checked-out `package.json` and the repository's releases.
 
-| Input                     | Default                    | Description                                                                                               |
-| ------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `build-command`           | —                          | Build the site inside the action. Empty means you built it yourself and must pass `version`               |
-| `dist-path`               | —                          | Directory to upload, e.g. `./dist`. Omit only when the run just repoints an already-uploaded version      |
-| `deployment-environments` | `zone`                     | Environments to repoint, as a comma list or JSON array. `'[]'` stages the bytes in S3 without rolling out |
-| `version`                 | computed                   | Deploy under a specific version (a release tag), or alone to repoint at one already in S3                 |
-| `percentage`              | `100`                      | Rollout percentage                                                                                        |
-| `package-name`            | `name` from `package.json` | S3 key root and KV record prefix                                                                          |
-| `broker-url`              | production broker          | Escape hatch for testing against another broker                                                           |
+| Input                     | Default                    | Description                                                                                                                                                                          |
+| ------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `build-command`           | —                          | Build the site inside the action. Empty means you built it yourself — pass `version` too, since a bundle built outside the action does not know the version the action would compute |
+| `dist-path`               | —                          | Directory to upload, e.g. `./dist`. Omit only when the run just repoints an already-uploaded version                                                                                 |
+| `deployment-environments` | `zone`                     | Environments to repoint, as a comma list or JSON array. `'[]'` stages the bytes in S3 without rolling out                                                                            |
+| `version`                 | computed                   | Deploy under a specific version (a release tag), or alone to repoint at one already in S3                                                                                            |
+| `percentage`              | `100`                      | Rollout percentage                                                                                                                                                                   |
+| `package-name`            | `name` from `package.json` | S3 key root and KV record prefix                                                                                                                                                     |
+| `broker-url`              | production broker          | Escape hatch for testing against another broker                                                                                                                                      |
 
 `deployment-environments` defaults to `zone` alone, deliberately. `today` and `org` are promoted from a job that declares a matching GitHub `environment:`, so its protection rules apply — defaulting to both made every merge publish zone and then be refused for today, leaving the job red with the dev rollout already live.
 
-The computed version is `<base>-<runId>.commit-<sha7>`. `<base>` is the **highest semver** among the repository's first 100 non-draft, non-prerelease releases, patch-incremented — highest rather than most recent, because a patch published for an old line after a newer release would otherwise walk the version backwards. `package.json`'s version is only a floor: several of these repositories have left it at `0.0.1` for dozens of releases, because oddish derived the version from the npm registry and nothing ever wrote it back.
+The computed version is `<base>-<runId>.commit-<sha7>`. `<base>` is the **highest semver** among the repository's first 100 non-draft, non-prerelease releases, patch-incremented when `package.json` sits below it, and otherwise `package.json` as-is. Highest rather than most recent, because a patch published for an old line after a newer release would otherwise walk the version backwards. With no release, no token or an API error it falls back to `package.json` — and warns, because that fallback is how a version ends up sorting below what is already live. `package.json`'s version is only a floor: several of these repositories have left it at `0.0.1` for dozens of releases, because oddish derived the version from the npm registry and nothing ever wrote it back.
 
 | Output    | Description                                                    |
 | --------- | -------------------------------------------------------------- |
