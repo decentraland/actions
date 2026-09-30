@@ -24,10 +24,6 @@ inputs:
   deployment-environments:
     description: 'Environments to repoint, as a JSON array or comma list (e.g. ''["zone"]''). Empty array ''[]'' stages the bytes in S3 without touching any KV. Defaults to zone only — staging and production are promoted deliberately from a job that declares a GitHub environment.'
     required: false
-  force:
-    description: "Fail instead of skipping when the target version is already published. Nothing can overwrite a published version — the broker refuses — so this turns a silent 'already there' into a loud error for a run that meant to write new bytes."
-    required: false
-    default: "false"
   deployment-name:
     description: "Rollout name (key into the KV `records` map)."
     required: false
@@ -103,7 +99,6 @@ runs:
         INPUT_DEPLOYMENT-NAME: ${{ inputs.deployment-name }}
         INPUT_PERCENTAGE: ${{ inputs.percentage }}
         INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}
-        INPUT_FORCE: ${{ inputs.force }}
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_BROKER-URL: ${{ inputs.broker-url }}
         INPUT_OIDC-AUDIENCE: ${{ inputs.oidc-audience }}
@@ -141,7 +136,6 @@ runs:
         INPUT_DEPLOYMENT-NAME: ${{ inputs.deployment-name }}
         INPUT_PERCENTAGE: ${{ inputs.percentage }}
         INPUT_REQUIRE-INDEX: ${{ inputs.require-index }}
-        INPUT_FORCE: ${{ inputs.force }}
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_BROKER-URL: ${{ inputs.broker-url }}
         INPUT_OIDC-AUDIENCE: ${{ inputs.oidc-audience }}

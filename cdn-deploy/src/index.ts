@@ -141,16 +141,6 @@ async function run(): Promise<void> {
     // authoritatively by the broker before it touches the rollout record.
     const hasBytesToWrite = !!(inputs.distPath || inputs.copyFromCommit);
 
-    // `force` means "redo the upload or copy", so on a run with nothing to redo it is a
-    // mistake rather than a modifier. Caught here, before a 15-minute write session is
-    // minted for work that cannot happen.
-    if (inputs.force && !hasBytesToWrite) {
-      throw new Error(
-        "`force` was set, but this run has no bytes to write: pass `dist-path` or " +
-          "`copy-from-commit`. To repoint an environment at a version already in S3, drop `force`.",
-      );
-    }
-
     // Nothing to write and nowhere to publish is not a deploy, and both paths below would
     // call it one: "Repoint only -- no S3 write", then "Stage only: bytes are in S3, no
     // rollout requested" -- which asserts something nothing verified. The prefix may be
@@ -198,16 +188,9 @@ async function run(): Promise<void> {
         e instanceof BrokerError && e.code === "version_already_published";
 
       const reportAlreadyPublished = (): S3Action => {
-        // `force` means "write these bytes anyway", and a published version cannot be
-        // written at all — so honouring the skip here would report success for a run that
-        // did the opposite of what was asked.
-        if (inputs.force) {
-          throw new Error(
-            `\`force\` was set, but ${packageName}@${targetVersion} is already published and its ` +
-              "bytes are immutable — they may be what production is serving. Deploy a new version " +
-              "instead of replacing a released one.",
-          );
-        }
+        // A published version is immutable, so this is the idempotent re-run: the bytes
+        // that are live stay live. Said plainly in the log, because "skipped" on a run the
+        // caller believes rebuilt something is worth being explicit about.
         core.info(
           `> ${remoteFolder} is already published — skipping the S3 write. What the CDN serves ` +
             "for this version is what was published before, not what this run built.",

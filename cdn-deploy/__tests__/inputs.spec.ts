@@ -93,7 +93,7 @@ describe("when parsing a boolean input", () => {
 
     describe("and the fallback is false", () => {
       it("should return false", () => {
-        expect(parseBooleanInput("", false, "force")).toBe(false);
+        expect(parseBooleanInput("", false, "copy-from-commit")).toBe(false);
       });
     });
   });
@@ -106,19 +106,19 @@ describe("when parsing a boolean input", () => {
 
   describe("and the value is lowercase true", () => {
     it("should return true", () => {
-      expect(parseBooleanInput("true", false, "force")).toBe(true);
+      expect(parseBooleanInput("true", false, "copy-from-commit")).toBe(true);
     });
   });
 
   describe("and the value is uppercase TRUE", () => {
     it("should return true rather than silently falling back to false", () => {
-      expect(parseBooleanInput("TRUE", false, "force")).toBe(true);
+      expect(parseBooleanInput("TRUE", false, "copy-from-commit")).toBe(true);
     });
   });
 
   describe("and the value is capitalised True", () => {
     it("should return true", () => {
-      expect(parseBooleanInput("True", false, "force")).toBe(true);
+      expect(parseBooleanInput("True", false, "copy-from-commit")).toBe(true);
     });
   });
 
@@ -142,14 +142,14 @@ describe("when parsing a boolean input", () => {
 
   describe("and the value is padded with whitespace", () => {
     it("should tolerate the padding and return the parsed boolean", () => {
-      expect(parseBooleanInput("  true \n", false, "force")).toBe(true);
+      expect(parseBooleanInput("  true \n", false, "copy-from-commit")).toBe(true);
     });
   });
 
   describe("and the value is a yes/no word", () => {
     it("should throw naming the offending input", () => {
-      expect(() => parseBooleanInput("yes", false, "force")).toThrow(
-        'Invalid value "yes" for `force`. Expected true or false.',
+      expect(() => parseBooleanInput("yes", false, "copy-from-commit")).toThrow(
+        'Invalid value "yes" for `copy-from-commit`. Expected true or false.',
       );
     });
   });
@@ -698,8 +698,8 @@ describe("when reading the action inputs", () => {
       expect(result.requireIndex).toBe(true);
     });
 
-    it("should default force to false", () => {
-      expect(result.force).toBe(false);
+    it("should default copy-from-commit to false", () => {
+      expect(result.copyFromCommit).toBe(false);
     });
 
     it("should default copyFromCommit to false", () => {
@@ -760,16 +760,16 @@ describe("when reading the action inputs", () => {
     });
   });
 
-  describe("and force is given in uppercase", () => {
+  describe("and copy-from-commit is given in uppercase", () => {
     let result: ActionInputs;
 
     beforeEach(() => {
-      setInputs({ force: "TRUE" });
+      setInputs({ "copy-from-commit": "TRUE" });
       result = readInputs();
     });
 
-    it("should return force as true", () => {
-      expect(result.force).toBe(true);
+    it("should return copy-from-commit as true", () => {
+      expect(result.copyFromCommit).toBe(true);
     });
   });
 

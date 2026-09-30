@@ -54,7 +54,6 @@ describe("when running the cdn-deploy action", () => {
       deploymentName: "_site",
       percentage: 100,
       requireIndex: true,
-      force: false,
       copyFromCommit: false,
       createGithubDeployment: false,
       cdnBaseUrl: "https://cdn.decentraland.org",
@@ -708,27 +707,6 @@ describe("when running the cdn-deploy action", () => {
       expect(core.setOutput).toHaveBeenCalledWith("mode", "skip");
     });
 
-    /**
-     * `force` means "write these bytes anyway". A published version cannot be written at
-     * all, so skipping would report success for a run that did the opposite of what was
-     * asked — and the docs promise force re-uploads past an existing version.
-     */
-    it("should fail rather than silently skip when force was set", async () => {
-      inputs = buildInputs({ distPath: "./dist", force: true, environments: ["zone"] });
-      readInputsMock.mockReturnValue(inputs);
-
-      await expect(run()).rejects.toThrow(/immutable/);
-    });
-
-    it("should not roll out when force could not be honoured", async () => {
-      inputs = buildInputs({ distPath: "./dist", force: true, environments: ["zone"] });
-      readInputsMock.mockReturnValue(inputs);
-
-      await run().catch(() => undefined);
-
-      expect(broker.rollout).not.toHaveBeenCalled();
-    });
-
     // Anything else from /credentials is a real failure and must not be swallowed.
     it("should still fail on any other broker refusal", async () => {
       broker.requestCredentials.mockRejectedValue(
@@ -736,28 +714,6 @@ describe("when running the cdn-deploy action", () => {
       );
 
       await expect(run()).rejects.toThrow("not your package");
-    });
-  });
-
-  describe("and force is set on a run with nothing to write", () => {
-    /**
-     * `force` used to reach the planner, which refused -- but only after a 15-minute write
-     * session had been minted for work that could never happen. It is a mistake, not a
-     * modifier, when there are no bytes to redo.
-     */
-    beforeEach(() => {
-      inputs = buildInputs({ version: "9.9.9", force: true, environments: [] });
-      readInputsMock.mockReturnValue(inputs);
-    });
-
-    it("should refuse and say what to pass instead", async () => {
-      await expect(run()).rejects.toThrow(/no bytes to write/);
-    });
-
-    it("should not mint credentials for work it cannot do", async () => {
-      await run().catch(() => undefined);
-
-      expect(broker.requestCredentials).not.toHaveBeenCalled();
     });
   });
 

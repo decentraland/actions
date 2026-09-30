@@ -38,8 +38,6 @@ export type ActionInputs = {
   commit?: string;
   /** Fail a deploy if the folder has no index.html at its root (default true). */
   requireIndex: boolean;
-  /** Redo the S3 upload/copy even when the target bytes are already present. */
-  force: boolean;
   /**
    * Opt in to the release copy: when the target `version` is absent from S3,
    * fill it from the current commit's already-uploaded build. Off by default so

@@ -81225,13 +81225,6 @@ async function run() {
         // make a rollback depend on STS. Whether the bytes are really there is checked
         // authoritatively by the broker before it touches the rollout record.
         const hasBytesToWrite = !!(inputs.distPath || inputs.copyFromCommit);
-        // `force` means "redo the upload or copy", so on a run with nothing to redo it is a
-        // mistake rather than a modifier. Caught here, before a 15-minute write session is
-        // minted for work that cannot happen.
-        if (inputs.force && !hasBytesToWrite) {
-            throw new Error("`force` was set, but this run has no bytes to write: pass `dist-path` or " +
-                "`copy-from-commit`. To repoint an environment at a version already in S3, drop `force`.");
-        }
         // Nothing to write and nowhere to publish is not a deploy, and both paths below would
         // call it one: "Repoint only -- no S3 write", then "Stage only: bytes are in S3, no
         // rollout requested" -- which asserts something nothing verified. The prefix may be
@@ -81272,14 +81265,9 @@ async function run() {
             // stays idempotent, it just cannot overwrite what is already live.
             const isAlreadyPublished = (e) => e instanceof broker_1.BrokerError && e.code === "version_already_published";
             const reportAlreadyPublished = () => {
-                // `force` means "write these bytes anyway", and a published version cannot be
-                // written at all — so honouring the skip here would report success for a run that
-                // did the opposite of what was asked.
-                if (inputs.force) {
-                    throw new Error(`\`force\` was set, but ${packageName}@${targetVersion} is already published and its ` +
-                        "bytes are immutable — they may be what production is serving. Deploy a new version " +
-                        "instead of replacing a released one.");
-                }
+                // A published version is immutable, so this is the idempotent re-run: the bytes
+                // that are live stay live. Said plainly in the log, because "skipped" on a run the
+                // caller believes rebuilt something is worth being explicit about.
                 core.info(`> ${remoteFolder} is already published — skipping the S3 write. What the CDN serves ` +
                     "for this version is what was published before, not what this run built.");
                 return "skip";
@@ -81674,9 +81662,9 @@ function asEnvironment(value) {
  *
  * `core.getBooleanInput` throws on `""`, and a composite action's `default:`
  * only applies when the key is absent from `with:` — so the common wrapper
- * pattern `force: ${{ inputs.force }}` with the caller omitting `force` would
- * otherwise kill the run before it starts. Case-insensitive on purpose too:
- * `force: TRUE` silently meaning `false` is a trap.
+ * pattern `require-index: ${{ inputs.require-index }}` with the caller omitting
+ * that input would otherwise kill the run before it starts. Case-insensitive on
+ * purpose too: `TRUE` silently meaning `false` is a trap.
  */
 function parseBooleanInput(raw, fallback, name) {
     const value = raw.trim().toLowerCase();
@@ -81957,7 +81945,6 @@ function readInputs() {
         version,
         commit: core.getInput("commit") || undefined,
         requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
-        force: parseBooleanInput(core.getInput("force"), false, "force"),
         copyFromCommit: parseBooleanInput(core.getInput("copy-from-commit"), false, "copy-from-commit"),
         createGithubDeployment: parseBooleanInput(core.getInput("create-github-deployment"), true, "create-github-deployment"),
         cdnBaseUrl: core.getInput("cdn-base-url") || exports.DEFAULT_CDN_BASE_URL,

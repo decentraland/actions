@@ -36,9 +36,9 @@ function asEnvironment(value: string): Environment {
  *
  * `core.getBooleanInput` throws on `""`, and a composite action's `default:`
  * only applies when the key is absent from `with:` — so the common wrapper
- * pattern `force: ${{ inputs.force }}` with the caller omitting `force` would
- * otherwise kill the run before it starts. Case-insensitive on purpose too:
- * `force: TRUE` silently meaning `false` is a trap.
+ * pattern `require-index: ${{ inputs.require-index }}` with the caller omitting
+ * that input would otherwise kill the run before it starts. Case-insensitive on
+ * purpose too: `TRUE` silently meaning `false` is a trap.
  */
 export function parseBooleanInput(raw: string, fallback: boolean, name: string): boolean {
   const value = raw.trim().toLowerCase();
@@ -366,7 +366,6 @@ export function readInputs(): ActionInputs {
     version,
     commit: core.getInput("commit") || undefined,
     requireIndex: parseBooleanInput(core.getInput("require-index"), true, "require-index"),
-    force: parseBooleanInput(core.getInput("force"), false, "force"),
     copyFromCommit: parseBooleanInput(core.getInput("copy-from-commit"), false, "copy-from-commit"),
     createGithubDeployment: parseBooleanInput(
       core.getInput("create-github-deployment"),

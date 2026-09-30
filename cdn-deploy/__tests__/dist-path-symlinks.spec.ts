@@ -43,7 +43,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.rmSync(workspace, { recursive: true });
   for (const key of Object.keys(process.env)) if (key.startsWith("INPUT_")) delete process.env[key];
 });
 
