@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as core from "@actions/core";
+import * as semver from "semver";
 import { ActionInputs, DEFAULT_BROKER_URL, DEFAULT_OIDC_AUDIENCE, Environment } from "./types";
 
 export const ENVIRONMENTS: Environment[] = ["zone", "today", "org"];
@@ -94,6 +95,29 @@ export function validatePackageName(packageName: string): string {
  * that only become valid once the suffix is added.
  */
 const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+
+/**
+ * Drop the `v` a git tag often carries, so the deployed prefix matches the bundle.
+ *
+ * The version becomes the S3 key's second segment AND the version the build bakes its asset
+ * base URL from. Those have to be the same string. A caller passing a release tag straight
+ * through (`version: ${{ github.event.release.tag_name }}`) hands over whatever the tag is
+ * called, while a build that seeds its manifest with `npm version` gets npm's normalised
+ * form -- so a `v1.2.3` tag uploads to `/v1.2.3/` and serves HTML asking for `/1.2.3/`.
+ *
+ * Only a valid semver string is rewritten. Anything else is returned untouched for
+ * `validateVersionShape` to judge, because a version is not required to be semver -- it is
+ * required to be a safe S3 key segment.
+ */
+export function normaliseVersion(version: string): string {
+  // Not `semver.clean`: that also drops `+build` metadata, which `VERSION_RE` allows and
+  // which distinguishes two uploads. `1.2.3+build.5` and `1.2.3+build.6` would collapse to
+  // the same prefix, and the second deploy would be refused as already published -- which
+  // the action treats as an idempotent re-run, so it would roll the environments onto the
+  // FIRST build's bytes and report success. It also strips a leading `=`, which
+  // `VERSION_RE` rejects on purpose.
+  return /^v\d/.test(version) && semver.valid(version) ? version.slice(1) : version;
+}
 
 export function validateVersionShape(version: string, source: string): string {
   if (!VERSION_RE.test(version)) {
@@ -353,9 +377,20 @@ export function readInputs(): ActionInputs {
   // command and reports success.
   const buildCommand = core.getInput("build-command").trim() || undefined;
 
-  const versionInput = core.getInput("version");
+  // Normalised only when the action runs the build. That is the one case where the version
+  // reaches the bundle through a manifest that may rewrite it -- a repository seeding
+  // `package.json` with `npm version` gets npm's bare form, so an upload under the tag's own
+  // `v1.2.3` would serve HTML asking for `/1.2.3/`.
+  //
+  // A caller that builds its own bundle baked in whatever it passed, and a repoint or a
+  // rollback names a prefix already sitting in S3. Rewriting either would invent the same
+  // mismatch in the other direction.
+  const versionInput = core.getInput("version").trim();
   const version = versionInput
-    ? validateVersionShape(versionInput, "the `version` input")
+    ? validateVersionShape(
+        buildCommand ? normaliseVersion(versionInput) : versionInput,
+        "the `version` input",
+      )
     : undefined;
 
   return {

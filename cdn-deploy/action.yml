@@ -19,7 +19,7 @@ inputs:
     required: false
     default: "100"
   version:
-    description: "Target version. Defaults to the computed commit version. Provide it to deploy under a specific version (e.g. a release tag), or alone to repoint the KV at an already-uploaded version. A target that is absent from S3 is an error unless `dist-path` says how to fill it."
+    description: "Target version. Defaults to the computed commit version. Provide it to deploy under a specific version (e.g. a release tag), or alone to repoint the KV at an already-uploaded version. A target that is absent from S3 is an error unless `dist-path` says how to fill it. When `build-command` is set, a leading `v` is dropped so the prefix matches what the build bakes in — `v1.2.3` uploads to `.../1.2.3/`, and the `version` output reports the name to repoint later."
     required: false
   broker-url:
     description: "Base URL of the cdn-deploy broker. It holds the Cloudflare token and the right to write the CDN bucket, so this action holds neither."

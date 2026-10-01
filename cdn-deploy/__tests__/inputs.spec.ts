@@ -7,6 +7,7 @@ import {
   DEFAULT_ROLLOUT_NAME,
   folderHasIndexHtml,
   isEnvironment,
+  normaliseVersion,
   parseBooleanInput,
   parseEnvironments,
   parsePercentage,
@@ -673,6 +674,38 @@ describe("when reading the action inputs", () => {
     jest.restoreAllMocks();
   });
 
+  describe("and a `v`-prefixed version is supplied", () => {
+    /**
+     * When the action runs the build, the version reaches the bundle through a manifest
+     * that may rewrite it: a repository seeding `package.json` with `npm version` gets
+     * npm's bare form. Uploading under the tag's own `v1.2.3` would then serve HTML asking
+     * for `/1.2.3/`.
+     */
+    it("should strip the prefix when the action owns the build", () => {
+      setInputs({ version: "v1.2.3", "build-command": "npm run build" });
+
+      expect(readInputs().version).toEqual("1.2.3");
+    });
+
+    /**
+     * Nothing rewrites the version in this mode -- the caller already baked whatever it
+     * passed into its own bundle -- so rewriting it here invents the same mismatch in the
+     * other direction.
+     */
+    it("should leave it alone when the caller built the bundle itself", () => {
+      setInputs({ version: "v1.2.3" });
+
+      expect(readInputs().version).toEqual("v1.2.3");
+    });
+
+    /** A repoint names a prefix already sitting in S3; rewriting it targets another one. */
+    it("should leave it alone on a repoint, which names an existing upload", () => {
+      setInputs({ version: "v1.2.3", "deployment-environments": "org" });
+
+      expect(readInputs().version).toEqual("v1.2.3");
+    });
+  });
+
   describe("and only the credentials are provided", () => {
     let result: ActionInputs;
 
@@ -837,5 +870,61 @@ describe("when reading the action inputs", () => {
     it("should return a zero percentage rather than coercing it to 100", () => {
       expect(result.percentage).toBe(0);
     });
+  });
+});
+
+describe("when the version input carries the `v` a git tag usually has", () => {
+  /**
+   * The version is both the S3 key's second segment and the value the build bakes its asset
+   * base URL from, so the two have to be the same string. A workflow passing a release tag
+   * straight through hands over whatever the tag is called, while a build seeding its
+   * manifest with `npm version` gets npm's normalised form.
+   */
+  it("should strip it so the prefix matches what the build emits", () => {
+    expect(normaliseVersion("v1.2.3")).toEqual("1.2.3");
+  });
+
+  it("should strip it from a commit build too", () => {
+    expect(normaliseVersion("v8.25.1-36767830652.commit-b4adeb6")).toEqual(
+      "8.25.1-36767830652.commit-b4adeb6",
+    );
+  });
+
+  it("should leave an already-bare version untouched", () => {
+    expect(normaliseVersion("8.25.1-36767830652.commit-b4adeb6")).toEqual(
+      "8.25.1-36767830652.commit-b4adeb6",
+    );
+  });
+
+  /**
+   * A version is not required to be semver -- it is required to be a safe S3 key segment.
+   * Anything semver cannot parse is handed on unchanged for the shape check to judge.
+   */
+  it("should pass a non-semver version through for the shape check", () => {
+    expect(normaliseVersion("not-a-version")).toEqual("not-a-version");
+  });
+
+  it("should not strip a `v` that is part of the name rather than a prefix", () => {
+    expect(normaliseVersion("version-one")).toEqual("version-one");
+  });
+
+  /**
+   * `VERSION_RE` allows `+`, so build metadata is part of what distinguishes one upload
+   * from another. Dropping it collapses two versions onto one prefix, and the second
+   * deploy is then refused as already published -- which the action reads as an idempotent
+   * re-run, rolling the environments onto the first build's bytes and reporting success.
+   */
+  it("should keep build metadata, which distinguishes two uploads", () => {
+    expect(normaliseVersion("1.2.3+build.5")).toEqual("1.2.3+build.5");
+    expect(normaliseVersion("1.2.3+build.6")).toEqual("1.2.3+build.6");
+  });
+
+  it("should keep build metadata while still stripping the prefix", () => {
+    expect(normaliseVersion("v1.2.3+build.5")).toEqual("1.2.3+build.5");
+  });
+
+  /** `VERSION_RE` rejects a leading `=`, and normalising must not smuggle one past it. */
+  it("should leave a semver range prefix alone", () => {
+    expect(normaliseVersion("=1.2.3")).toEqual("=1.2.3");
   });
 });

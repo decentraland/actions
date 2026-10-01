@@ -1,4 +1,4 @@
-import { isRetryable, Sleep, withRetry } from "../src/retry";
+import { isRetryable, MAX_RETRY_DELAY_MS, Sleep, withRetry } from "../src/retry";
 
 /** Builds an error shaped like an HTTP failure from fetch-based clients. */
 function httpError(message: string, status: number): Error & { status: number } {
@@ -415,5 +415,200 @@ describe("when the broker reports a rollout already in progress", () => {
 
   it("should still refuse to retry an ordinary refusal", () => {
     expect(isRetryable({ status: 403, code: "repository_mismatch" })).toBe(false);
+  });
+});
+
+describe("when a retryable failure carries a Retry-After", () => {
+  /** Captures the waits instead of performing them, so the schedule is observable. */
+  function recordingSleep(): { waits: number[]; sleep: Sleep } {
+    const waits: number[] = [];
+    return { waits, sleep: async (ms: number) => void waits.push(ms) };
+  }
+
+  function lockedError(retryAfterSeconds?: number) {
+    return Object.assign(new Error("another rollout holds the lease"), {
+      status: 409,
+      code: "rollout_in_progress",
+      retryAfterSeconds,
+    });
+  }
+
+  /**
+   * The broker sets Retry-After from how long the lease it is holding has left. Waiting the
+   * backoff schedule instead spends the whole budget in about a second and a half, which
+   * fails a job for a rollout the server was about to let through.
+   */
+  it("should wait what the broker asked for when that is longer than the backoff", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 3) throw lockedError(5);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).resolves.toEqual("done");
+
+    expect(waits).toEqual([5000, 5000]);
+  });
+
+  /** A value below the base delay would otherwise turn a queue into a hot loop. */
+  it("should floor an implausibly small requested wait at the base delay", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 3) throw lockedError(0.1);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep, baseDelayMs: 500 })).resolves.toEqual("done");
+
+    expect(waits).toEqual([500, 500]);
+  });
+
+  /** A header is attacker-influenced in principle and mistyped in practice. */
+  it("should cap an absurd wait rather than parking the job", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 2) throw lockedError(86_400);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).resolves.toEqual("done");
+
+    expect(waits).toEqual([MAX_RETRY_DELAY_MS]);
+  });
+
+  it("should fall back to the backoff when no Retry-After is present", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 3) throw lockedError(undefined);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep, baseDelayMs: 500 })).resolves.toEqual("done");
+
+    expect(waits).toEqual([500, 1000]);
+  });
+
+  it("should ignore a negative or non-numeric value", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 2) throw lockedError(-1);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep, baseDelayMs: 500 })).resolves.toEqual("done");
+
+    expect(waits).toEqual([500]);
+  });
+});
+
+describe("when the lease is held for longer than a general failure would be retried", () => {
+  function recordingSleep(): { waits: number[]; sleep: Sleep } {
+    const waits: number[] = [];
+    return { waits, sleep: async (ms: number) => void waits.push(ms) };
+  }
+
+  /**
+   * Contention is a queue, not a fault. The broker answers `rollout_in_progress` with
+   * `Retry-After: 5` and no holder outlives its own 30s function timeout, so the budget has
+   * to cover that — three attempts gives two waits and hands back a red job for a rollout
+   * the broker was about to allow.
+   */
+  it("should keep waiting past the general attempt limit", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 7) {
+        throw Object.assign(new Error("lease held"), {
+          status: 409,
+          code: "rollout_in_progress",
+          retryAfterSeconds: 5,
+        });
+      }
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).resolves.toEqual("done");
+
+    expect(waits).toEqual([5000, 5000, 5000, 5000, 5000, 5000]);
+  });
+
+  it("should still give up once the lease budget is spent", async () => {
+    const { sleep } = recordingSleep();
+    const fn = async () => {
+      throw Object.assign(new Error("lease held"), {
+        status: 409,
+        code: "rollout_in_progress",
+        retryAfterSeconds: 5,
+      });
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).rejects.toThrow("lease held");
+  });
+
+  /**
+   * A lease left behind by a holder its own timeout killed is not stealable until 45s. The
+   * budget has to clear that, not just the 30s a live holder is bounded by.
+   */
+  it("should outlast a lease abandoned by a crashed holder", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 11) {
+        throw Object.assign(new Error("lease held"), {
+          status: 409,
+          code: "rollout_in_progress",
+          retryAfterSeconds: 5,
+        });
+      }
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).resolves.toEqual("done");
+
+    expect(waits.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(45_000);
+  });
+
+  /**
+   * The budget exists for the moment a call is queued behind someone else. Recomputing it
+   * from the newest error alone would abandon the queue the first time a single 5xx landed
+   * mid-wait, which is exactly when giving up is least useful.
+   */
+  it("should keep the longer budget when a server error interrupts the queue", async () => {
+    const { sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      attempts++;
+      if (attempts <= 2) {
+        throw Object.assign(new Error("lease held"), {
+          status: 409,
+          code: "rollout_in_progress",
+          retryAfterSeconds: 5,
+        });
+      }
+      if (attempts < 6) throw httpError("broker hiccup", 503);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).resolves.toEqual("done");
+    expect(attempts).toEqual(6);
+  });
+
+  /** The longer budget is for contention alone: a 5xx that failed three times is not about to stop. */
+  it("should not extend the budget for an ordinary server error", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      attempts++;
+      throw httpError("broker is down", 503);
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).rejects.toThrow("broker is down");
+    expect(attempts).toEqual(3);
+    expect(waits).toHaveLength(2);
   });
 });

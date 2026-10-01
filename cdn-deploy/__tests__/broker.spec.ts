@@ -160,6 +160,58 @@ describe("when calling the deploy broker", () => {
     });
   });
 
+  describe("and another caller holds the rollout lease", () => {
+    /**
+     * The header and the waiting are covered separately elsewhere; this is the wiring
+     * between them. A 409 carrying `rollout_in_progress` has to come back through `post`
+     * as something the retry helper recognises, or the deploy fails for a rollout the
+     * broker was about to allow.
+     */
+    it("should retry and succeed once the lease is released", async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          response(
+            409,
+            { code: "rollout_in_progress", message: "another rollout holds the lease" },
+            // Seconds, kept small: this waits on the real timer.
+            { "retry-after": "1" },
+          ),
+        )
+        .mockResolvedValueOnce(response(200, { key: "auth", environment: "zone" }));
+
+      await expect(
+        client.rollout({
+          packageName: "@dcl/auth-site",
+          version: "1.0.0",
+          environment: "zone",
+          percentage: 100,
+          rolloutName: "_site",
+        }),
+      ).resolves.toMatchObject({ key: "auth" });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    /**
+     * `Retry-After` also has an HTTP-date form. `Number()` gives NaN for it, which is
+     * dropped rather than turned into a wait, leaving the backoff schedule. The broker only
+     * ever sends seconds, so this is about not mis-reading a value rather than supporting it.
+     */
+    it("should ignore an HTTP-date retry-after rather than deriving a wait from it", async () => {
+      fetchMock.mockResolvedValue(
+        response(
+          409,
+          { code: "source_not_ready", message: "still uploading" },
+          { "retry-after": "Wed, 21 Oct 2026 07:28:00 GMT" },
+        ),
+      );
+
+      await expect(
+        client.release({ packageName: "@dcl/auth-site", version: "1.0.0", sourceVersion: "0.9.0" }),
+      ).rejects.toMatchObject({ code: "source_not_ready", retryAfterSeconds: undefined });
+    });
+  });
+
   describe("and the broker answers with an unparseable body", () => {
     beforeEach(() => {
       fetchMock.mockResolvedValue(response(500, "<html>gateway error</html>"));
