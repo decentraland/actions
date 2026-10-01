@@ -55,13 +55,17 @@ name: build-and-deploy
 on:
   push: { branches: [master] }
 
-concurrency: # one deploy at a time per repo — the KV update is read-modify-write
-  group: cdn-deploy-${{ github.repository }}
-  cancel-in-progress: false
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Per deploy path, never one group for the whole workflow. Within a path the group is
+    # what keeps deploys ordered: GitHub cancels the older pending run when a newer queues,
+    # so the newest commit is the one that lands. Across paths that is wrong — a release
+    # queued behind a push would vanish when the next push arrives — which is why push,
+    # release and promote each get their own.
+    concurrency:
+      group: cdn-deploy-${{ github.repository }}-push
+      cancel-in-progress: false
     permissions: { id-token: write, contents: read, deployments: write, statuses: write }
     steps:
       - uses: actions/checkout@v4
@@ -158,9 +162,9 @@ The CF Worker serves `https://cdn.decentraland.org/<prefix>/<version>/…` and s
 
 ## Notes & caveats
 
-- **One deploy at a time per repo.** Set a workflow `concurrency` group (see Quick start) — the KV update is read-modify-write and Cloudflare KV has no compare-and-swap.
+- **Concurrent deploys are safe, and the broker is what makes them safe.** The KV update is read-modify-write and Cloudflare KV has no compare-and-swap, so the broker takes a lease per environment and record before writing, and answers a contended call with `rollout_in_progress` and a `Retry-After`. This action waits that out rather than failing. A `concurrency` group in the calling workflow is therefore about **ordering**, not correctness: within one deploy path, cancelling the older pending run is how the newest commit ends up live rather than whichever finished last. Give each path its own group — push, release, promote — because one group across all three applies that same cancellation across paths, where it silently drops a queued release instead.
 - **Ordering.** The S3 step always runs before the rollout, and the broker refuses to publish a prefix without a completion marker, so KV never points at a half-written version. A failed run is safe to re-run (idempotent). A crashed upload leaves no completion marker, so the prefix stays re-openable and a re-run simply finishes it; a _finished_ version is immutable and a re-run is reported as a skip.
-- **Transient failures are retried.** Broker calls retry on a 429, any 5xx and network errors (3 attempts, exponential backoff), so a blip after the bytes land doesn't leave the deploy uploaded-but-not-repointed. S3 is retried by the aws-sdk itself, and the broker retries Cloudflare on its own side.
+- **Transient failures are retried.** Broker calls retry on a 429, any 5xx and network errors — 3 attempts with exponential backoff — so a blip after the bytes land doesn't leave the deploy uploaded-but-not-repointed. Lease contention gets its own budget: `rollout_in_progress` is retried up to 11 times, honouring the broker's `Retry-After`, which outlasts the 45s after which an abandoned lease becomes stealable. S3 is retried by the aws-sdk itself, and the broker retries Cloudflare on its own side.
 - **Multi-env is not atomic.** Repointing several environments writes each KV namespace in turn; on a mid-way failure the action throws an aggregate naming which envs were already updated vs failed (no rollback — KV has none).
 - **Bad inputs are errors, not silent winners.** A duplicated environment; a version containing a path separator; a `dist-path` that is the repo root, resolves outside the workspace, or holds a nested `.git`; a run that would upload nothing and publish nothing.
 - **The KV key is not yours to choose.** It comes from `deploymentPath` in definitions. Which key a package may write decides whose site a deploy replaces, so accepting it as an input would let any authorised repository repoint another team's site.
