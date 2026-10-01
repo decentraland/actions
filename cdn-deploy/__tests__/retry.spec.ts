@@ -550,6 +550,54 @@ describe("when the lease is held for longer than a general failure would be retr
     await expect(withRetry("rollout", fn, { sleep })).rejects.toThrow("lease held");
   });
 
+  /**
+   * A lease left behind by a holder its own timeout killed is not stealable until 45s. The
+   * budget has to clear that, not just the 30s a live holder is bounded by.
+   */
+  it("should outlast a lease abandoned by a crashed holder", async () => {
+    const { waits, sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      if (++attempts < 11) {
+        throw Object.assign(new Error("lease held"), {
+          status: 409,
+          code: "rollout_in_progress",
+          retryAfterSeconds: 5,
+        });
+      }
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).resolves.toEqual("done");
+
+    expect(waits.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(45_000);
+  });
+
+  /**
+   * The budget exists for the moment a call is queued behind someone else. Recomputing it
+   * from the newest error alone would abandon the queue the first time a single 5xx landed
+   * mid-wait, which is exactly when giving up is least useful.
+   */
+  it("should keep the longer budget when a server error interrupts the queue", async () => {
+    const { sleep } = recordingSleep();
+    let attempts = 0;
+    const fn = async () => {
+      attempts++;
+      if (attempts <= 2) {
+        throw Object.assign(new Error("lease held"), {
+          status: 409,
+          code: "rollout_in_progress",
+          retryAfterSeconds: 5,
+        });
+      }
+      if (attempts < 6) throw httpError("broker hiccup", 503);
+      return "done";
+    };
+
+    await expect(withRetry("rollout", fn, { sleep })).resolves.toEqual("done");
+    expect(attempts).toEqual(6);
+  });
+
   /** The longer budget is for contention alone: a 5xx that failed three times is not about to stop. */
   it("should not extend the budget for an ordinary server error", async () => {
     const { waits, sleep } = recordingSleep();

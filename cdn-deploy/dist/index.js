@@ -81953,12 +81953,13 @@ exports.MAX_RETRY_DELAY_MS = 30000;
  * Attempts allowed while another caller holds the rollout lease.
  *
  * Contention is a queue, not a fault, so the budget is sized to outlast the queue rather
- * than to give up politely. The broker answers `rollout_in_progress` with `Retry-After: 5`
- * and no holder can outlive its own 30s function timeout, so eight waits of five seconds
- * clears the longest lease a live holder can hold with margin. The general budget stays at
- * three: a 5xx that has failed three times is not about to stop.
+ * than to give up politely. The broker answers `rollout_in_progress` with `Retry-After: 5`,
+ * and the longest a lease can block a caller is the 45s after which it becomes stealable --
+ * which is what a holder killed by its own 30s timeout leaves behind. Ten waits of five
+ * seconds clears that. The general budget stays at three: a 5xx that has failed three times
+ * is not about to stop.
  */
-exports.LEASE_CONTENTION_ATTEMPTS = 9;
+exports.LEASE_CONTENTION_ATTEMPTS = 11;
 /** Contention for the rollout lease, which is waited out rather than backed off from. */
 function isLeaseContention(e) {
     return e?.code === "rollout_in_progress";
@@ -82016,12 +82017,18 @@ async function withRetry(label, fn, opts = {}) {
     // Unbounded on purpose: the ceiling depends on which failure came back, and that is not
     // known until one does. Every path through the body either returns or throws, and `limit`
     // is finite, so this terminates.
+    // Sticky: once this call has queued behind a lease it keeps the longer budget, even if a
+    // later attempt comes back as something else. Recomputing from the newest error alone
+    // would cut a wait short on a single 5xx arriving mid-queue, which is the one moment the
+    // budget exists for.
+    let contended = false;
     for (let attempt = 1;; attempt++) {
         try {
             return await fn();
         }
         catch (e) {
-            const limit = isLeaseContention(e) ? Math.max(attempts, exports.LEASE_CONTENTION_ATTEMPTS) : attempts;
+            contended = contended || isLeaseContention(e);
+            const limit = contended ? Math.max(attempts, exports.LEASE_CONTENTION_ATTEMPTS) : attempts;
             if (attempt >= limit || !isRetryable(e))
                 throw e;
             // The server's estimate replaces the schedule rather than racing it. Backing off on
