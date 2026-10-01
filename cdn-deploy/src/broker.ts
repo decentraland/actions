@@ -1,5 +1,4 @@
 import * as core from "@actions/core";
-import nodeFetch from "node-fetch";
 import { FetchLike } from "./types";
 import { withRetry } from "./retry";
 
@@ -85,7 +84,10 @@ export function createBrokerClient(opts: {
   /** Injected in tests; production mints a fresh token per call. */
   getToken?: () => Promise<string>;
 }): BrokerClient {
-  const doFetch: FetchLike = opts.fetch || (nodeFetch as unknown as FetchLike);
+  // Node's own `fetch`, global since 18 and well below this action's floor. A polyfill
+  // would be one more dependency in a bundle consumers execute, and the only one still
+  // holding the package on a CommonJS-only major.
+  const doFetch: FetchLike = opts.fetch || (fetch as unknown as FetchLike);
   // A fresh token per call on purpose: they are short-lived, and an upload long enough to
   // need a credential refresh is long enough for a cached one to have expired.
   const getToken = opts.getToken || (() => core.getIDToken(opts.audience));

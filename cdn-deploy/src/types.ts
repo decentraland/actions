@@ -40,7 +40,7 @@ export type ActionInputs = {
   brokerUrl: string;
 };
 
-/** Minimal `node-fetch` shape, narrowed to what the broker client needs. */
+/** The slice of `fetch` the broker client uses, narrowed so a test can supply one. */
 export type FetchLike = (
   url: string,
   init?: { method?: string; headers?: Record<string, string>; body?: string },

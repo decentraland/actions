@@ -316,3 +316,43 @@ describe("when a credentials grant comes back", () => {
     expect(mockSetSecret).toHaveBeenCalledWith("the-token");
   });
 });
+
+/**
+ * Every other test here injects a fetch, so nothing exercises the one the action actually
+ * runs with. The client falls back to the runtime's global `fetch`, and a wrong fallback
+ * fails only in a real job.
+ */
+describe("when no fetch is injected", () => {
+  const realFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("should use the runtime's own fetch", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      calls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => JSON.stringify({ key: "sites", environment: "zone", records: [] }),
+      };
+    }) as unknown as typeof fetch;
+
+    const client = createBrokerClient({
+      baseUrl: "https://broker.example",
+      audience: "aud",
+      getToken: async () => "token",
+    });
+    await client.rollout({
+      packageName: "@dcl/sites",
+      version: "1.0.0",
+      environment: "zone",
+      percentage: 100,
+    });
+
+    expect(calls).toEqual(["https://broker.example/rollout"]);
+  });
+});
