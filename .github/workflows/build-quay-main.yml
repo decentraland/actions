@@ -45,7 +45,7 @@ jobs:
       registry-path: ${{ steps.push-to-quay.outputs.registry-path }}
       registry-paths: ${{ steps.push-to-quay.outputs.registry-paths }}
     steps:
-      - uses: actions/checkout@v4.1.4
+      - uses: actions/checkout@v7
       # An empty docker-tag makes the tags expression below fall through and re-push the SHA tag.
       - name: Require an immutable docker-tag when the SHA tag is skipped
         if: ${{ github.event_name == 'release' || inputs.skip-commit-sha-tag }}
@@ -59,7 +59,7 @@ jobs:
           esac
       - name: Build Image
         id: build-image
-        uses: redhat-actions/buildah-build@v2.13
+        uses: redhat-actions/buildah-build@v3
         with:
           image: ${{ inputs.service-name }}
           layers: ${{ inputs.layers }}
@@ -74,7 +74,7 @@ jobs:
       # in which case 'username' and 'password' can be omitted.
       - name: Push To quay.io
         id: push-to-quay
-        uses: redhat-actions/push-to-registry@v2.8
+        uses: redhat-actions/push-to-registry@v3
         with:
           image: ${{ steps.build-image.outputs.image }}
           tags: ${{ steps.build-image.outputs.tags }}
