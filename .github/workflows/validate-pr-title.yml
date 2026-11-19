@@ -16,10 +16,13 @@ jobs:
         with:
           types: |
             break
+            build
             chore
+            ci
             docs
             feat
             fix
+            perf
             refactor
             revert
             style
